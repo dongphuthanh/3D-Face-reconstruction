@@ -28,6 +28,7 @@ from face3d.data import FFHQCrops
 from face3d.encoder import ResNetEncoder
 from face3d.flame_torch import FlameTorch
 from face3d.landmarks import LandmarkEmbedding
+from face3d.augment import consistency_loss, two_views
 from face3d.losses import landmark_loss, photometric_loss, regularization
 from face3d.pipeline import FaceRenderer
 
@@ -42,6 +43,9 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--w-lmk", type=float, default=5.0)
     ap.add_argument("--w-pho", type=float, default=1.0)
+    ap.add_argument("--w-con", type=float, default=0.0,
+                    help="shape-consistency across two augmented views; "
+                         "0 reproduces the original baseline")
     ap.add_argument("--size", type=int, default=224)
     ap.add_argument("--limit-steps", type=int, default=0, help="cap steps/epoch for smoke tests")
     ap.add_argument("--freeze-backbone", action="store_true")
@@ -79,60 +83,72 @@ def main():
     print(f"=== training on {len(tr)} images ({len(va)} held out), {DEV} ===")
     print(f"    {a.epochs} epochs x {per_epoch} steps = {steps}, batch {a.batch}, lr {a.lr}"
           + (", backbone frozen" if a.freeze_backbone else ""))
+    print(f"    consistency weight: {a.w_con}"
+          + ("  (two augmented views, batch doubles)" if a.w_con > 0 else "  (off)"))
     print(f"    texture: {'on' if tex else 'OFF (flat grey)'}   "
           f"trainable {sum(p.numel() for p in params) / 1e6:.1f} M")
     print("")
 
-    def step(batch):
+    def step(batch, augment=True):
         img = batch["image"].to(DEV, non_blocking=True)
         gt = batch["landmarks"].to(DEV, non_blocking=True)
-        valid = batch["valid"].to(DEV, non_blocking=True)
+        paired = a.w_con > 0 and augment
+        if paired:
+            img, gt = two_views(img, gt)
+        # Validity is recomputed from pixels rather than taken from the cache:
+        # a rotated or scaled view has its own black borders, so the ingest-time
+        # mask no longer describes this image.
+        valid = img.sum(1) > 0
         pred = enc.predict(img)
         verts, _ = renderer.geometry(pred)
         render, mask = renderer.render(verts, pred)
         lmk = renderer.landmarks(verts, pred.cam)
         target = img.permute(0, 2, 3, 1)
         l_lmk = landmark_loss(lmk, gt)
-        l_pho = photometric_loss(render, target, mask & (valid > 0))
+        l_pho = photometric_loss(render, target, mask & valid)
         l_reg = regularization(pred)
-        loss = a.w_lmk * l_lmk + a.w_pho * l_pho + l_reg
-        return loss, l_lmk, l_pho, l_reg, render, mask, img
+        l_con = consistency_loss(pred.shape) if paired else render.new_zeros(())
+        loss = a.w_lmk * l_lmk + a.w_pho * l_pho + l_reg + a.w_con * l_con
+        return loss, (l_lmk, l_pho, l_reg, l_con), render, mask, img
 
     hist = []
     done = 0
     for ep in range(a.epochs):
         enc.train()
         t0 = time.time()
-        agg = np.zeros(4)
+        agg = np.zeros(5)
         n = 0
         for batch in dl:
             opt.zero_grad()
-            loss, ll, lp, lg, *_ = step(batch)
+            loss, terms, *_ = step(batch)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 5.0)
             opt.step()
             done += 1
             if done < steps:
                 sched.step()
-            agg += [loss.item(), ll.item(), lp.item(), lg.item()]
+            agg += [loss.item()] + [x.item() for x in terms]
             n += 1
             if a.limit_steps and n >= a.limit_steps:
                 break
         agg /= max(n, 1)
 
         enc.eval()
-        vagg = np.zeros(4)
+        vagg = np.zeros(5)
         m = 0
         with torch.no_grad():
             for batch in vl:
-                loss, ll, lp, lg, *_ = step(batch)
-                vagg += [loss.item(), ll.item(), lp.item(), lg.item()]
+                # Validation is measured without augmentation, so the number is
+                # comparable across runs with and without consistency.
+                loss, terms, *_ = step(batch, augment=False)
+                vagg += [loss.item()] + [x.item() for x in terms]
                 m += 1
                 if a.limit_steps and m >= 4:
                     break
         vagg /= max(m, 1)
         hist.append({"epoch": ep, "train": agg.tolist(), "val": vagg.tolist()})
-        print(f"  ep {ep:2d}  train {agg[0]:.4f} (lmk {agg[1]:.4f} pho {agg[2]:.4f})   "
+        con = f" con {agg[4]:.4f}" if a.w_con > 0 else ""
+        print(f"  ep {ep:2d}  train {agg[0]:.4f} (lmk {agg[1]:.4f} pho {agg[2]:.4f}{con})   "
               f"val {vagg[0]:.4f} (lmk {vagg[1]:.4f} pho {vagg[2]:.4f})   "
               f"{time.time() - t0:.0f}s", flush=True)
 
@@ -144,7 +160,7 @@ def main():
     enc.eval()
     with torch.no_grad():
         b = next(iter(vl))
-        _, _, _, _, render, mask, img = step(b)
+        _, _, render, mask, img = step(b, augment=False)
         k = min(6, img.shape[0])
         top = torch.cat(list(img.permute(0, 2, 3, 1)[:k]), 1)
         bot = torch.cat(list(render[:k]), 1)
