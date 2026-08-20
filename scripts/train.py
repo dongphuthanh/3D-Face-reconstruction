@@ -26,6 +26,7 @@ from face3d import assets
 from face3d.albedo import CACHE_DIR, FlameTexture
 from face3d.data import FFHQCrops
 from face3d.encoder import ResNetEncoder
+from face3d.facemask import face_faces, face_region
 from face3d.flame_torch import FlameTorch
 from face3d.landmarks import LandmarkEmbedding
 from face3d.augment import consistency_loss, two_views
@@ -50,6 +51,9 @@ def main():
                     action="store_false", default=True,
                     help="rasterise both paired views (about 45%% more VRAM); "
                          "by default only the weak view is rendered")
+    ap.add_argument("--skin-mask", type=float, default=0.045,
+                    help="face-region radius in metres for the photometric mask "
+                         "(story C2); 0 disables and scores the whole silhouette")
     ap.add_argument("--size", type=int, default=224)
     ap.add_argument("--limit-steps", type=int, default=0, help="cap steps/epoch for smoke tests")
     ap.add_argument("--freeze-backbone", action="store_true")
@@ -66,7 +70,12 @@ def main():
         device=DEV)
     tex_cache = CACHE_DIR / "flame_texture_256_50.npz"
     tex = FlameTexture(tex_cache, device=DEV) if tex_cache.exists() else None
-    renderer = FaceRenderer(flame, lmk_idx=emb, image_size=a.size, texture=tex)
+    keep = None
+    if a.skin_mask > 0:
+        vm = face_region(flame, emb, radius=a.skin_mask)
+        keep = face_faces(flame, vm)
+    renderer = FaceRenderer(flame, lmk_idx=emb, image_size=a.size, texture=tex,
+                            face_keep=keep)
 
     tr = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train")
     va = FFHQCrops(ROOT / "data" / "ffhq", a.size, "val")
@@ -89,6 +98,9 @@ def main():
           + (", backbone frozen" if a.freeze_backbone else ""))
     print(f"    consistency weight: {a.w_con}"
           + ("  (two augmented views, batch doubles)" if a.w_con > 0 else "  (off)"))
+    print(f"    skin mask: "
+          + (f"radius {a.skin_mask} m, {int(keep.sum())}/{flame.n_faces} triangles"
+             if keep is not None else "OFF (whole silhouette)"))
     print(f"    texture: {'on' if tex else 'OFF (flat grey)'}   "
           f"trainable {sum(p.numel() for p in params) / 1e6:.1f} M")
     print("")

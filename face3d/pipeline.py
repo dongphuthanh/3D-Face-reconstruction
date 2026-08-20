@@ -28,11 +28,15 @@ def project(verts, cam):
 class FaceRenderer:
     """FlameParams -> (image, mask, landmarks). Holds no state beyond the model."""
 
-    def __init__(self, flame, lmk_idx=None, image_size=224, texture=None):
+    def __init__(self, flame, lmk_idx=None, image_size=224, texture=None,
+                 face_keep=None):
         self.flame = flame
         self.lmk_idx = lmk_idx
         self.size = image_size
         self.texture = texture          # face3d.albedo.FlameTexture, or None
+        # Boolean (F,) over triangles. When set, the returned mask covers only
+        # face skin rather than the whole silhouette -- see face3d.facemask.
+        self.face_keep = face_keep
 
     def geometry(self, params: FlameParams):
         p = params.pad_to(self.flame.n_shape, self.flame.n_expr)
@@ -67,6 +71,11 @@ class FaceRenderer:
         H = W = self.size
         ndc = project(verts, params.cam)
         fid, bary, mask = rasterize(ndc, self.flame.faces, H, W)
+        if self.face_keep is not None:
+            # Restrict to skin. The scalp is hair in nearly every photograph and
+            # the neck stub is geometry FLAME invents, so scoring either against
+            # a skin albedo model is noise the encoder pays for in shape.
+            mask = mask & self.face_keep[fid.clamp(min=0)]
         n = interpolate(vertex_normals(verts, self.flame.faces), self.flame.faces, fid, bary)
         n = F.normalize(n, dim=-1, eps=1e-8)
         shaded = sh_shading(n, params.light)
