@@ -28,10 +28,11 @@ def project(verts, cam):
 class FaceRenderer:
     """FlameParams -> (image, mask, landmarks). Holds no state beyond the model."""
 
-    def __init__(self, flame, lmk_idx=None, image_size=224):
+    def __init__(self, flame, lmk_idx=None, image_size=224, texture=None):
         self.flame = flame
         self.lmk_idx = lmk_idx
         self.size = image_size
+        self.texture = texture          # face3d.albedo.FlameTexture, or None
 
     def geometry(self, params: FlameParams):
         p = params.pad_to(self.flame.n_shape, self.flame.n_expr)
@@ -39,19 +40,29 @@ class FaceRenderer:
         return verts, joints
 
     def landmarks(self, verts, cam):
-        """(B,L,2) in NDC. Requires the FLAME landmark embedding to be meaningful."""
+        """(B,L,2) in NDC.
+
+        Accepts either a LandmarkEmbedding (barycentric, the real MPI asset) or
+        a plain tensor of vertex indices (a stand-in).
+        """
         if self.lmk_idx is None:
             raise RuntimeError(
                 "no landmark embedding set — download the FLAME landmark embedding "
                 "from the MPI portal, or pass lmk_idx explicitly")
+        if hasattr(self.lmk_idx, "positions"):
+            pts = self.lmk_idx.positions(verts, self.flame.faces)
+            # Project the embedded points themselves, not their host vertices.
+            s, t = cam[:, :1].unsqueeze(-1), cam[:, 1:].unsqueeze(1)
+            return pts[..., :2] * s + t
         return project(verts, cam)[:, self.lmk_idx, :2]
 
     def render(self, verts, params: FlameParams, albedo=None):
         """Returns (image (B,H,W,3), mask (B,H,W)).
 
-        albedo defaults to flat grey: the BFM albedo basis is a separate
-        registration we do not have, so the photometric loss currently sees
-        shading only. Swapping in real albedo is a change here and nowhere else.
+        Albedo comes from `self.texture` when one is attached and the params
+        carry coefficients. Without it the surface is flat grey, which makes
+        every rendered face an identical mannequin — the photometric loss can
+        then only see silhouette and shading, not identity.
         """
         H = W = self.size
         ndc = project(verts, params.cam)
@@ -60,7 +71,10 @@ class FaceRenderer:
         n = F.normalize(n, dim=-1, eps=1e-8)
         shaded = sh_shading(n, params.light)
         if albedo is None:
-            albedo = shaded.new_full((1, 1, 1, 3), 0.6)
+            if self.texture is not None and params.albedo is not None:
+                albedo = self.texture.sample(params.albedo, fid, bary)
+            else:
+                albedo = shaded.new_full((1, 1, 1, 3), 0.6)
         return (shaded * albedo * mask.unsqueeze(-1)).clamp(0, 1), mask
 
     def __call__(self, params: FlameParams, albedo=None):
