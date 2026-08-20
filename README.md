@@ -62,12 +62,20 @@ by alpha interpolates from the FLAME mean face (0) to the full prediction (1):
 
 | alpha | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 |
 |---|---|---|---|---|---|
-| NoW median | **1.355** | 1.417 | 1.507 | 1.651 | 1.841 mm |
+| baseline | **1.355** | 1.417 | 1.507 | 1.651 | 1.841 mm |
+| + C2 skin mask | **1.355** | 1.376 | 1.430 | 1.546 | 1.701 mm |
 
-Strictly monotonic, with no optimum above zero. Any genuine identity signal --
-however weak -- would produce a dip at some alpha. There is none, so the learned
-deviation is indistinguishable from noise added to a good prior, and the mean
-face wins because uninformative deviation strictly increases expected error.
+Both strictly monotonic, with no optimum above zero. Any genuine identity
+signal -- however weak -- would produce a dip at some alpha. There is none, so
+the learned deviation is indistinguishable from noise added to a good prior,
+and the mean face wins because uninformative deviation strictly increases
+expected error.
+
+The skin-mask curve sits below the baseline at every alpha: same shrinkage
+behaviour, gentler slope. C2 did not teach the encoder who anyone is, it made
+its errors less harmful per unit of magnitude. NoW alone called that a 7.6%
+improvement and the identity ratio called it unchanged (0.42 -> 0.41); both are
+true, and only the sweep distinguishes them.
 
 `scripts/visualize_predictions.py` shows the same thing directly: five subjects,
 five photographs each, every prediction reduced to its neutral shape under one
