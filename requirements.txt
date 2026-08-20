@@ -17,6 +17,12 @@ pillow==11.3.0
 matplotlib==3.10.6
 scipy==1.16.2
 
+# MediaPipe 1.0 removed the legacy mp.solutions.face_mesh API that most
+# FLAME-era code uses; face3d/detect.py wraps the Tasks API instead. It also
+# needs models/face_landmarker.task, which does not ship with the package:
+#   curl -sSL -o models/face_landmarker.task https://storage.googleapis.com/\n#     mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+mediapipe==1.0.1
+
 # Deliberately absent:
 #   nvdiffrast  — needs nvcc + MSVC + ninja; face3d/render.py is a pure-torch
 #                 stand-in with a matching interface. See the README.

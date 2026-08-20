@@ -17,6 +17,7 @@ imagepaths*.txt
 deca_model*
 FLAME_albedo_from_BFM*
 mediapipe_landmark_embedding/
+models/
 landmark_embedding*
 
 # The synthetic CI fixture contains no MPI data and is the one model we may ship.

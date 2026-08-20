@@ -10,6 +10,8 @@ SUITES = [
     ("torch port parity + gradients", "test_flame_torch.py", []),
     ("rasteriser", "test_render.py", []),
     ("encoder / params interface", "test_interface.py", []),
+    ("albedo / texture space", "test_albedo.py", []),
+    ("mediapipe detector", "test_detect.py", []),
     ("chain inverts", "test_fit_synthetic.py", []),
     ("overfits a batch", "train_overfit.py", ["300", "3e-4"]),   # short run for CI
 ]
