@@ -24,8 +24,8 @@ optimiser can touch the basis by accident.
 | Measurement | Value |
 |---|---|
 | FLAME forward (batch 32) | 16,000 meshes/s, 66 MB VRAM |
-| Rasteriser (batch 8, 224px) | 129 img/s, 937 MB VRAM |
-| Training step (batch 8, 224px) | 163 ms, 2.12 GB peak |
+| Rasteriser (batch 8, 224px) | 846 img/s, 214 MB VRAM |
+| Training step (batch 12, 224px) | ~0.9 s, 2.72 GB peak (paired views) |
 | Torch↔NumPy parity | 8.3e-17 m |
 | Overfit a single batch (C1) | 3.73 mm mean vertex error, 83× loss drop |
 

@@ -46,7 +46,7 @@ def _bary(tri, px, py):
 
 
 @torch.no_grad()
-def _assign_faces(verts_px, depth, faces, H, W, K, chunk=4096):
+def _assign_faces(verts_px, depth, faces, H, W, K, budget=2_000_000):
     """Z-buffer. Returns (B,H,W) long face ids, -1 where nothing was hit.
 
     Depth and face index are packed into one int64 key so a single amin-scatter
@@ -61,34 +61,57 @@ def _assign_faces(verts_px, depth, faces, H, W, K, chunk=4096):
     zmin, zmax = depth.min(), depth.max()
     scale = (1 << 30) / (zmax - zmin + 1e-12)
     BIG = (1 << 30) * Fn + Fn
-
-    off = torch.arange(K, device=dev, dtype=verts_px.dtype)
-    oy, ox = torch.meshgrid(off, off, indexing="ij")
-    ox, oy = ox.reshape(-1), oy.reshape(-1)
-
     buf = torch.full((B, H * W), BIG, dtype=torch.long, device=dev)
-    for lo in range(0, Fn, chunk):
-        hi = min(lo + chunk, Fn)
-        fsub = faces[lo:hi]
-        tri = verts_px[:, fsub]                                 # (B,f,3,2)
-        zt = depth[:, fsub]
 
-        px = tri[..., 0].min(-1).values.floor().unsqueeze(-1) + ox
-        py = tri[..., 1].min(-1).values.floor().unsqueeze(-1) + oy
-
-        w = _bary(tri.unsqueeze(2), px + 0.5, py + 0.5)         # (B,f,K*K,3)
-        z = (w * zt.unsqueeze(2)).sum(-1)
-
-        ok = (w >= 0).all(-1) & (px >= 0) & (px < W) & (py >= 0) & (py < H)
-        if not ok.any():
+    # Bucket faces by how large they are drawn. A single K sized for the biggest
+    # triangle makes every small one allocate the same K*K candidates: on a
+    # FLAME head the median triangle spans ~2 px while the largest spans ~16, so
+    # one K wastes roughly an order of magnitude on 90% of the mesh.
+    tri_all = verts_px[:, faces]
+    span = (tri_all.max(-2).values - tri_all.min(-2).values).max(-1).values.max(0).values
+    del tri_all
+    edges = [4, 8, 16, K]
+    lo_edge = 0
+    for edge in edges:
+        if edge > K:
+            break
+        sel = torch.nonzero((span > lo_edge) & (span <= edge), as_tuple=True)[0]
+        lo_edge = edge
+        if sel.numel() == 0:
             continue
+        k = min(int(edge) + 2, K)
 
-        zq = ((z - zmin) * scale).long().clamp(0, 1 << 30)
-        fid = torch.arange(lo, hi, device=dev).view(1, -1, 1).expand_as(zq)
-        key = torch.where(ok, zq * Fn + fid, torch.full_like(zq, BIG))
-        flat = (py.long() * W + px.long()).clamp(0, H * W - 1)
-        buf.scatter_reduce_(1, flat.reshape(B, -1), key.reshape(B, -1),
-                            reduce="amin", include_self=True)
+        # Chunk so the candidate tensors stay within a fixed element budget,
+        # instead of a fixed face count whose memory then scales with B and K.
+        per_face = max(B * k * k, 1)
+        chunk = max(1, min(sel.numel(), budget // per_face))
+
+        off = torch.arange(k, device=dev, dtype=verts_px.dtype)
+        oy, ox = torch.meshgrid(off, off, indexing="ij")
+        ox, oy = ox.reshape(-1), oy.reshape(-1)
+
+        for lo in range(0, sel.numel(), chunk):
+            idx = sel[lo:lo + chunk]
+            fsub = faces[idx]
+            tri = verts_px[:, fsub]                             # (B,f,3,2)
+            zt = depth[:, fsub]
+
+            px = tri[..., 0].min(-1).values.floor().unsqueeze(-1) + ox
+            py = tri[..., 1].min(-1).values.floor().unsqueeze(-1) + oy
+
+            w = _bary(tri.unsqueeze(2), px + 0.5, py + 0.5)      # (B,f,k*k,3)
+            z = (w * zt.unsqueeze(2)).sum(-1)
+
+            ok = (w >= 0).all(-1) & (px >= 0) & (px < W) & (py >= 0) & (py < H)
+            if not ok.any():
+                continue
+
+            zq = ((z - zmin) * scale).long().clamp(0, 1 << 30)
+            fid = idx.view(1, -1, 1).expand_as(zq)
+            key = torch.where(ok, zq * Fn + fid, torch.full_like(zq, BIG))
+            flat = (py.long() * W + px.long()).clamp(0, H * W - 1)
+            buf.scatter_reduce_(1, flat.reshape(B, -1), key.reshape(B, -1),
+                                reduce="amin", include_self=True)
 
     return torch.where(buf == BIG, torch.full_like(buf, -1), buf % Fn).view(B, H, W)
 
