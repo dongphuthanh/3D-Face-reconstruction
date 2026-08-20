@@ -79,6 +79,14 @@ def main():
             local.det = FaceDetector(blendshapes=False)
         return local.det
 
+    cache = out.parent / f"landmarks_{a.size}.npz"
+    have, have_lic = {}, {}
+    if cache.exists():
+        z = np.load(cache)
+        have = {str(k): v for k, v in zip(z["keys"], z["landmarks"])}
+        have_lic = {str(k): str(v) for k, v in zip(z["keys"], z["licenses"])}
+        print(f"    reusing {len(have)} cached landmark records")
+
     lock = threading.Lock()
     done = {"ok": 0, "nodet": 0, "err": 0, "skip": 0, "bytes": 0}
     records = []
@@ -87,9 +95,21 @@ def main():
         key, spec, lic = item
         dst = out / f"{key}.jpg"
         if dst.exists():
+            # A previously-downloaded crop still needs a landmark record, or a
+            # resumed run silently produces fewer landmarks than crops. Re-detect
+            # on the crop itself: it is already face-centred, so normalised
+            # coordinates map straight to NDC.
             with lock:
                 done["skip"] += 1
-            return None
+            if key in have:
+                return (key, have[key], have_lic.get(key, lic))
+            im = np.asarray(Image.open(dst).convert("RGB"))
+            res = detector().detect(im)
+            if res is None:
+                return None
+            pts = select_embedding_points(res["norm"], need)
+            ndc = np.stack([pts[:, 0] * 2 - 1, 1 - pts[:, 1] * 2], -1)
+            return (key, ndc.astype(np.float32), lic)
         tmp = out / f".{key}.png"
         try:
             fid = spec["file_url"].rsplit("id=", 1)[1]
@@ -129,7 +149,7 @@ def main():
 
     if records:
         np.savez_compressed(
-            out.parent / f"landmarks_{a.size}.npz",
+            cache,
             keys=np.array([r[0] for r in records]),
             landmarks=np.stack([r[1] for r in records]),
             licenses=np.array([r[2] for r in records]))
