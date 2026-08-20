@@ -46,6 +46,10 @@ def main():
     ap.add_argument("--w-con", type=float, default=0.0,
                     help="shape-consistency across two augmented views; "
                          "0 reproduces the original baseline")
+    ap.add_argument("--render-both-views", dest="render_first_only",
+                    action="store_false", default=True,
+                    help="rasterise both paired views (about 45%% more VRAM); "
+                         "by default only the weak view is rendered")
     ap.add_argument("--size", type=int, default=224)
     ap.add_argument("--limit-steps", type=int, default=0, help="cap steps/epoch for smoke tests")
     ap.add_argument("--freeze-backbone", action="store_true")
@@ -101,15 +105,22 @@ def main():
         valid = img.sum(1) > 0
         pred = enc.predict(img)
         verts, _ = renderer.geometry(pred)
-        render, mask = renderer.render(verts, pred)
-        lmk = renderer.landmarks(verts, pred.cam)
-        target = img.permute(0, 2, 3, 1)
-        l_lmk = landmark_loss(lmk, gt)
-        l_pho = photometric_loss(render, target, mask & valid)
+
+        # Landmarks and regularisation are computed on every view: they need
+        # FLAME and a projection, both cheap. Rasterisation is what costs
+        # memory (roughly half of a full step), so only the views in `n_render`
+        # are rendered. With paired views that halves the render cost while
+        # keeping the augmented view's landmark supervision.
+        n_render = img.shape[0] // 2 if (paired and a.render_first_only) else img.shape[0]
+        render, mask = renderer.render(verts[:n_render], pred[:n_render])
+        target = img[:n_render].permute(0, 2, 3, 1)
+
+        l_lmk = landmark_loss(renderer.landmarks(verts, pred.cam), gt)
+        l_pho = photometric_loss(render, target, mask & valid[:n_render])
         l_reg = regularization(pred)
         l_con = consistency_loss(pred.shape) if paired else render.new_zeros(())
         loss = a.w_lmk * l_lmk + a.w_pho * l_pho + l_reg + a.w_con * l_con
-        return loss, (l_lmk, l_pho, l_reg, l_con), render, mask, img
+        return loss, (l_lmk, l_pho, l_reg, l_con), render, mask, img[:n_render]
 
     hist = []
     done = 0

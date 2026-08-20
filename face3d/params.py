@@ -54,6 +54,14 @@ class FlameParams:
         """Jaw rotation — joint 2. The only pose joint DECA-style encoders drive."""
         return self.pose[:, 6:9]
 
+    def __getitem__(self, idx) -> "FlameParams":
+        """Slice along the batch. Needed to render a subset of a batch -- e.g.
+        paired-view training, where both views are encoded but only one is
+        rasterised, since the render path dominates memory."""
+        f = lambda t: None if t is None else t[idx]
+        return replace(self, shape=f(self.shape), expr=f(self.expr), pose=f(self.pose),
+                       cam=f(self.cam), light=f(self.light), albedo=f(self.albedo))
+
     def to(self, device) -> "FlameParams":
         f = lambda t: None if t is None else t.to(device)
         return replace(self, shape=f(self.shape), expr=f(self.expr), pose=f(self.pose),
