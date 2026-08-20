@@ -74,8 +74,14 @@ def _inverse_grid_matrix(p):
 
 def affine_view(img, lmk, p):
     """img (B,3,H,W), lmk (B,L,2) y-up NDC -> augmented image and landmarks."""
+    # padding_mode="border", not "zeros". Zero padding fills the corners of a
+    # rotated view with exact black, which is a large shift in low-level image
+    # statistics. BatchNorm's running estimates then track the augmented
+    # distribution and misnormalise clean images at eval time -- measured as a
+    # predicted camera scale of 9.2 against 6.9, i.e. the face rendered
+    # off-frame, purely from switching train() to eval() on identical weights.
     grid = F.affine_grid(_inverse_grid_matrix(p), img.shape, align_corners=False)
-    out = F.grid_sample(img, grid, mode="bilinear", padding_mode="zeros",
+    out = F.grid_sample(img, grid, mode="bilinear", padding_mode="border",
                         align_corners=False)
     M = _forward_matrix(p)
     ones = torch.ones(*lmk.shape[:2], 1, device=lmk.device, dtype=lmk.dtype)
@@ -98,22 +104,36 @@ def photometric_jitter(img, brightness=0.25, contrast=0.25, gamma=(0.8, 1.25),
     return x.clamp(0, 1)
 
 
-def two_views(img, lmk, geometric=True, photometric=True):
+def two_views(img, lmk, weak_strong=True):
     """Return (2B,3,H,W) and (2B,L,2): view A stacked above view B.
 
-    The two halves index the same source images, so a consistency loss is
+    Weak/strong pairing rather than two equally-augmented views. View A gets
+    only mild colour jitter and no geometric change; view B gets the full
+    affine plus jitter. Two reasons:
+
+      * Every training step then still shows BatchNorm a geometrically clean
+        image, so its running statistics stay usable at eval time. Two strongly
+        augmented views drift the statistics away from the inference
+        distribution entirely.
+      * "Your answer on the clean image and on the perturbed one must agree" is
+        the stronger and more standard constraint -- it anchors consistency to
+        the distribution the model will actually be asked about, instead of
+        letting both views drift together.
+
+    The halves index the same source images, so the consistency loss is simply
     `first_half - second_half`.
     """
-    views_i, views_l = [], []
-    for _ in range(2):
-        x, y = img, lmk
-        if geometric:
-            x, y = affine_view(x, y, sample_params(img.shape[0], img.device))
-        if photometric:
-            x = photometric_jitter(x)
-        views_i.append(x)
-        views_l.append(y)
-    return torch.cat(views_i, 0), torch.cat(views_l, 0)
+    if weak_strong:
+        a_img = photometric_jitter(img, brightness=0.1, contrast=0.1,
+                                   gamma=(0.95, 1.05), noise=0.0)
+        a_lmk = lmk
+    else:
+        a_img, a_lmk = affine_view(img, lmk, sample_params(img.shape[0], img.device))
+        a_img = photometric_jitter(a_img)
+
+    b_img, b_lmk = affine_view(img, lmk, sample_params(img.shape[0], img.device))
+    b_img = photometric_jitter(b_img)
+    return torch.cat([a_img, b_img], 0), torch.cat([a_lmk, b_lmk], 0)
 
 
 def consistency_loss(shape):

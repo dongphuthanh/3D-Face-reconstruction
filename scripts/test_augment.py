@@ -105,6 +105,26 @@ diff = consistency_loss(torch.cat([torch.ones(N, 100), torch.zeros(N, 100)]))
 check("consistency loss is zero when halves agree", float(same) == 0.0)
 check("consistency loss is positive when they differ", float(diff) > 0, f"{float(diff):.1f}")
 
+print("")
+print("=== augmented views must not shift low-level statistics ===")
+# BatchNorm tracks activation statistics over the training distribution and
+# applies them to clean images at eval time. Zero-padded rotation corners shift
+# those statistics enough that the encoder predicted a camera scale of 9.2
+# instead of 6.9 purely from switching train() to eval() -- with the face then
+# rendered off-frame. Nothing crashes; validation loss simply looks terrible
+# while training loss looks fine.
+black_before = float((imgs.sum(1) == 0).float().mean())
+black_after = float((vi.sum(1) == 0).float().mean())
+check("augmentation does not add large black regions",
+      black_after - black_before < 0.02,
+      f"exact-zero pixels {black_before * 100:.1f}% -> {black_after * 100:.1f}%")
+check("mean brightness is preserved within jitter range",
+      abs(float(vi.mean()) - float(imgs.mean())) < 0.12,
+      f"{float(imgs.mean()):.3f} -> {float(vi.mean()):.3f}")
+check("view A stays geometrically clean (anchors BatchNorm)",
+      float((vl[:N] - lm).abs().max()) < 1e-5,
+      "weak view leaves landmarks untouched")
+
 panel = torch.cat([torch.cat(list(imgs[:4].permute(0, 2, 3, 1)), 1),
                    torch.cat(list(vi[:4].permute(0, 2, 3, 1)), 1),
                    torch.cat(list(vi[N:N + 4].permute(0, 2, 3, 1)), 1)], 0)
