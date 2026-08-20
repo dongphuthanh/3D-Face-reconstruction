@@ -57,6 +57,25 @@ visually convincing and geometrically wrong by 19 mm. **Visual plausibility is
 not evidence of accuracy** — which is why the NoW benchmark, not eyeballing,
 decides whether this works.
 
+**The shape channel carries no identity signal.** Scaling predicted shape
+by alpha interpolates from the FLAME mean face (0) to the full prediction (1):
+
+| alpha | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 |
+|---|---|---|---|---|---|
+| NoW median | **1.355** | 1.417 | 1.507 | 1.651 | 1.841 mm |
+
+Strictly monotonic, with no optimum above zero. Any genuine identity signal --
+however weak -- would produce a dip at some alpha. There is none, so the learned
+deviation is indistinguishable from noise added to a good prior, and the mean
+face wins because uninformative deviation strictly increases expected error.
+
+`scripts/visualize_predictions.py` shows the same thing directly: five subjects,
+five photographs each, every prediction reduced to its neutral shape under one
+fixed camera produces the same generic face. Meanwhile pose, expression,
+lighting and albedo all transfer correctly -- five of the encoder's six output
+groups work, and the inert one is the only thing NoW measures, since the metric
+aligns away camera and pose and scores against a neutral scan.
+
 **A single metric misleads.** Two 8-epoch runs, identical but for a
 shape-consistency term across augmented views:
 

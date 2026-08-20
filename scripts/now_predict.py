@@ -64,6 +64,10 @@ def main():
     ap.add_argument("--out", default=str(ROOT / "out" / "now_pred"))
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--size", type=int, default=224)
+    ap.add_argument("--shape-scale", type=float, default=1.0,
+                    help="shrink predicted shape toward the FLAME mean; 0 IS the "
+                         "mean face. Sweeping this measures how much of the "
+                         "predicted deviation is signal and how much is noise")
     ap.add_argument("--neutral", action="store_true",
                     help="zero expression and pose before writing the mesh")
     a = ap.parse_args()
@@ -117,6 +121,8 @@ def main():
         x = x.float().to(DEV) / 255.0
         with torch.no_grad():
             pred = enc.predict(x)
+            if a.shape_scale != 1.0:
+                pred.shape.mul_(a.shape_scale)
             if a.neutral:
                 # Measured, not assumed: NoW's ground truth is one neutral scan
                 # per subject, and zeroing expression and pose improves the
