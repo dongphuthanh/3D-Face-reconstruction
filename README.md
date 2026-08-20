@@ -57,6 +57,28 @@ visually convincing and geometrically wrong by 19 mm. **Visual plausibility is
 not evidence of accuracy** — which is why the NoW benchmark, not eyeballing,
 decides whether this works.
 
+**A single metric misleads.** Two 8-epoch runs, identical but for a
+shape-consistency term across augmented views:
+
+| configuration | NoW median | identity ratio |
+|---|---|---|
+| published DECA (test split) | ~1.09 mm | - |
+| **FLAME mean face** | **1.355 mm** | - |
+| + consistency (w=0.05) | 1.560 mm | 0.29 |
+| baseline | 1.841 mm | 0.42 |
+
+Consistency improved NoW by 15% and made identity learning *worse*. It cut
+within-subject shape spread 3x, as designed -- but cut between-subject spread
+4.4x, so the encoder became invariant to identity along with everything else.
+`(shape_A - shape_B)^2` is minimised perfectly by predicting a constant, and
+nothing in the objective rewards shape varying between people. The NoW gain is
+regression toward the mean face, which outscores both runs.
+
+The fix is an explicit anti-collapse term (VICReg-style variance and covariance
+regularisation), not a different weight. `scripts/diag_identity.py` reports the
+between/within ratio precisely because the millimetre figure alone would have
+called this a success.
+
 **Landmarks and albedo are substitutes.** Direct parameter optimisation against
 a textured synthetic target, 1200 iterations, only the fitted model varying
 (`scripts/ablation.py`):
