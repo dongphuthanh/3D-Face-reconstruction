@@ -122,5 +122,9 @@ def run_docker_eval(dataset_root, pred_root, image="noweval", nproc=None,
     # The credential helper lives beside docker.exe; without it on PATH the
     # daemon call fails with a confusing "error getting credentials".
     env["PATH"] = str(pathlib.Path(docker_bin).parent) + os.pathsep + env.get("PATH", "")
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    # errors="replace": the container emits bytes the Windows console codec
+    # cannot decode, and the default strict decoding kills the reader thread
+    # after the evaluation has already succeeded.
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env,
+                       encoding="utf-8", errors="replace")
     return p.returncode, (p.stdout or "") + (p.stderr or "")
