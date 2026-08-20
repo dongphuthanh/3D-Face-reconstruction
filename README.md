@@ -162,10 +162,27 @@ identity-labelled image corpus.
 
 ## Evaluation
 
-NoW data is complete locally (100 subjects, 20 validation scans with 7-point
-landmarks). The official `now_evaluation` metric code pins numpy 1.19.5 and
-chumpy 0.70 against Python ≤3.9 and needs a Unix C++ toolchain, so it runs
-through the Dockerfile it ships rather than natively. Not yet wired up.
+The official `now_evaluation` metric runs through the Dockerfile it ships
+(`make eval-image`); it pins numpy 1.19.5 and chumpy 0.70 against Python <=3.9
+and needs a Unix C++ toolchain, so it will not install natively on Windows.
+
+Harness validated with two baselines that need no trained model (`make eval-check`):
+
+| Baseline | Median | Mean |
+|---|---|---|
+| Identity (ground truth as its own prediction) | 3.1e-07 mm | 5.9e-07 mm |
+| FLAME mean face, 20 validation subjects | **1.355 mm** | 1.703 mm |
+
+The identity run confirms the metric pipeline is correct end to end. The mean-face
+run is the number that matters for planning: **predicting the average face scores
+1.355 mm**, against roughly 1.09 mm for published DECA. The entire headroom
+between predicting nothing and the state of the art is about 0.27 mm, so any
+claimed improvement needs statistics to match.
+
+NoW aligns predictions using 7 landmarks and ships only a picture of where they
+are. They are recovered from the MediaPipe embedding and validated by Procrustes
+against all 20 ground-truth landmark files: 7.44 mm RMS for the correct ordering
+versus 19.00 mm mirrored and 35.67 mm for random permutations.
 
 Use the **non-metrical** protocol: published DECA numbers are non-metrical, and
 comparing against the metrical leaderboard produces a large unexplained gap.

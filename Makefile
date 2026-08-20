@@ -26,9 +26,16 @@ test-fast:
 test-ci: fixture
 	FACE3D_MODEL=tests/fixtures/tiny_head.pkl $(PY) scripts/run_tests.py
 
+eval-image:
+	cd now_evaluation-main && docker build -t noweval .
+
+eval-check:
+	$(PY) scripts/now_validate_harness.py identity --subjects 5
+	$(PY) scripts/now_validate_harness.py mean --subjects 20
+
 eval:
-	@echo "Not yet wired up — needs Docker and the now_evaluation image."
-	@echo "See README, 'Evaluation'."
+	@echo "Run 'make eval-check' to validate the harness first."
+	@echo "Prediction + scoring of a trained encoder is not wired up yet."
 
 clean:
 	rm -rf out/*.obj out/*.png __pycache__ face3d/__pycache__ scripts/__pycache__
