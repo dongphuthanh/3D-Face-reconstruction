@@ -1,0 +1,25 @@
+# Pinned environment — story A2.
+#
+# torch MUST be a CUDA 12.8 build. The development GPU is an RTX 5070 Laptop
+# (Blackwell, sm_120), and older CUDA wheels install cleanly then fail at the
+# first kernel launch with "no kernel image is available for execution on the
+# device" — which reads as a broken install rather than an architecture
+# mismatch. Install with:
+#
+#   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128
+#
+# CPU-only (CI) works with the default index.
+
+torch==2.9.0
+torchvision==0.24.0
+numpy==2.3.3
+pillow==11.3.0
+matplotlib==3.10.6
+scipy==1.16.2
+
+# Deliberately absent:
+#   nvdiffrast  — needs nvcc + MSVC + ninja; face3d/render.py is a pure-torch
+#                 stand-in with a matching interface. See the README.
+#   chumpy      — FLAME's pickles reference it, but face3d/flame_np.py shims it
+#                 rather than depending on an unmaintained package that breaks
+#                 on modern numpy.

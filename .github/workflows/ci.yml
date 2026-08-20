@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # CPU wheels: the runner has no GPU, and every suite falls back to CPU.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Syntax check
+        run: python -m compileall -q face3d scripts
+
+      # No FLAME model can exist here — every variant is non-redistributable.
+      # The synthetic fixture shares FLAME's pickle structure but contains no
+      # MPI data, so LBS, blendshapes, rasterisation, gradients and the encoder
+      # interface are all exercised on a public runner. Suites whose thresholds
+      # are stated in millimetres against a real head skip themselves.
+      - name: Generate synthetic model fixture
+        run: python scripts/make_fixture.py
+
+      - name: Run test suite
+        env:
+          FACE3D_MODEL: tests/fixtures/tiny_head.pkl
+        run: python scripts/run_tests.py

@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+# Licensed assets — NEVER commit. See §9 of the implementation plan.
+# FLAME is non-commercial research use and non-redistributable; NoW is research
+# use; the texture space is CC BY-NC-SA. Committing any of these, even to a
+# private repo, is redistribution. This section is a licence control, not tidiness.
+# ---------------------------------------------------------------------------
+*.zip
+*.tar
+*.pkl
+*.npz
+FLAME20*/
+TextureSpace/
+NoW_Dataset/
+scans/
+scans_lmks_onlypp/
+imagepaths*.txt
+deca_model*
+FLAME_albedo_from_BFM*
+mediapipe_landmark_embedding/
+landmark_embedding*
+
+# The synthetic CI fixture contains no MPI data and is the one model we may ship.
+!tests/fixtures/tiny_head.pkl
+
+# Third-party checkout; pinned by URL in the README rather than vendored.
+now_evaluation-main/
+
+# Demo photographs — consent is per-image and tracked separately.
+data/photos/
+
+# ---------------------------------------------------------------------------
+# Generated output
+# ---------------------------------------------------------------------------
+out/
+*.obj
+runs/
+checkpoints/
+*.log
+
+# ---------------------------------------------------------------------------
+# Python / tooling
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.vscode/
+.idea/
