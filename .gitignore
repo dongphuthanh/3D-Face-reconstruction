@@ -29,6 +29,10 @@ now_evaluation-main/
 # Demo photographs — consent is per-image and tracked separately.
 data/photos/
 
+# FFHQ: CC BY-NC-SA as a collection, and 6.5 GB besides. The ingest is
+# reproducible from scripts/ingest_ffhq.py, so only the recipe is tracked.
+data/ffhq/
+
 # ---------------------------------------------------------------------------
 # Generated output
 # ---------------------------------------------------------------------------
