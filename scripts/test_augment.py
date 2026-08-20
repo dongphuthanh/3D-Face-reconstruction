@@ -106,6 +106,41 @@ check("consistency loss is zero when halves agree", float(same) == 0.0)
 check("consistency loss is positive when they differ", float(diff) > 0, f"{float(diff):.1f}")
 
 print("")
+print("=== swap loss: collapse must not be a way out ===")
+# The point of swapping rather than penalising distance. A distance penalty is
+# minimised perfectly by a constant shape, which is what the measured run did:
+# identity ratio fell 0.42 -> 0.29. Swapping gives collapse no reward, because
+# the other view's shape then has to explain this view's face and a constant
+# renders the mean.
+from face3d.augment import swap_shape
+from face3d.params import FlameParams
+
+B, NS = 4, 100
+mk = lambda s: FlameParams(shape=s, expr=torch.zeros(2 * B, 50),
+                           pose=torch.zeros(2 * B, 15), cam=torch.zeros(2 * B, 3),
+                           light=torch.zeros(2 * B, 9, 3))
+torch.manual_seed(0)
+distinct = torch.randn(2 * B, NS)
+p_swapped = swap_shape(mk(distinct))
+check("swap exchanges the two halves",
+      torch.equal(p_swapped.shape[:B], distinct[B:])
+      and torch.equal(p_swapped.shape[B:], distinct[:B]))
+check("swap leaves everything except shape untouched",
+      torch.equal(p_swapped.expr, torch.zeros(2 * B, 50))
+      and torch.equal(p_swapped.cam, torch.zeros(2 * B, 3)))
+
+collapsed = torch.ones(2 * B, NS) * 0.3          # identical for every image
+check("distance penalty rewards collapse (this is the bug)",
+      float(consistency_loss(collapsed)) == 0.0
+      and float(consistency_loss(distinct)) > 1.0,
+      f"collapsed {float(consistency_loss(collapsed)):.1f} vs "
+      f"distinct {float(consistency_loss(distinct)):.1f}")
+check("swap is a no-op under collapse, so it grants no reward",
+      torch.equal(swap_shape(mk(collapsed)).shape, collapsed),
+      "swapped == original, so the reconstruction loss is unchanged and "
+      "collapse buys nothing")
+
+print("")
 print("=== augmented views must not shift low-level statistics ===")
 # BatchNorm tracks activation statistics over the training distribution and
 # applies them to clean images at eval time. Zero-padded rotation corners shift

@@ -29,7 +29,7 @@ from face3d.encoder import ResNetEncoder
 from face3d.facemask import face_faces, face_region
 from face3d.flame_torch import FlameTorch
 from face3d.landmarks import LandmarkEmbedding
-from face3d.augment import consistency_loss, two_views
+from face3d.augment import consistency_loss, swap_shape, two_views
 from face3d.losses import landmark_loss, photometric_loss, regularization
 from face3d.pipeline import FaceRenderer
 
@@ -47,6 +47,16 @@ def main():
     ap.add_argument("--w-con", type=float, default=0.0,
                     help="shape-consistency across two augmented views; "
                          "0 reproduces the original baseline")
+    ap.add_argument("--w-swap", type=float, default=0.0,
+                    help="DECA-style shape swap between paired views. Unlike "
+                         "--w-con this cannot be satisfied by collapsing shape; "
+                         "requires --w-con>0 or --pair to build the views")
+    ap.add_argument("--swap-photometric", action="store_true",
+                    help="also apply the photometric term to the swapped render "
+                         "(costs one more rasterisation)")
+    ap.add_argument("--pair", action="store_true",
+                    help="build paired views even when --w-con is 0, so the swap "
+                         "loss can be used on its own")
     ap.add_argument("--render-both-views", dest="render_first_only",
                     action="store_false", default=True,
                     help="rasterise both paired views (about 45%% more VRAM); "
@@ -96,8 +106,9 @@ def main():
     print(f"=== training on {len(tr)} images ({len(va)} held out), {DEV} ===")
     print(f"    {a.epochs} epochs x {per_epoch} steps = {steps}, batch {a.batch}, lr {a.lr}"
           + (", backbone frozen" if a.freeze_backbone else ""))
-    print(f"    consistency weight: {a.w_con}"
-          + ("  (two augmented views, batch doubles)" if a.w_con > 0 else "  (off)"))
+    print(f"    consistency weight: {a.w_con}   swap weight: {a.w_swap}"
+          + ("  (paired views, batch doubles)" if (a.w_con > 0 or a.w_swap > 0 or a.pair)
+             else "  (off)"))
     print(f"    skin mask: "
           + (f"radius {a.skin_mask} m, {int(keep.sum())}/{flame.n_faces} triangles"
              if keep is not None else "OFF (whole silhouette)"))
@@ -108,7 +119,7 @@ def main():
     def step(batch, augment=True):
         img = batch["image"].to(DEV, non_blocking=True)
         gt = batch["landmarks"].to(DEV, non_blocking=True)
-        paired = a.w_con > 0 and augment
+        paired = (a.w_con > 0 or a.w_swap > 0 or a.pair) and augment
         if paired:
             img, gt = two_views(img, gt)
         # Validity is recomputed from pixels rather than taken from the cache:
@@ -128,18 +139,33 @@ def main():
         target = img[:n_render].permute(0, 2, 3, 1)
 
         l_lmk = landmark_loss(renderer.landmarks(verts, pred.cam), gt)
+
+        # DECA-style swap: re-render each view using the *other* view's shape,
+        # everything else unchanged, and apply the ordinary reconstruction
+        # losses. Unlike a distance penalty this cannot be satisfied by
+        # collapsing shape, because the other view's shape is then the only
+        # thing available to explain this view's landmarks and pixels.
+        l_swap = render.new_zeros(())
+        if paired and a.w_swap > 0:
+            sw = swap_shape(pred)
+            v_sw, _ = renderer.geometry(sw)
+            l_swap = landmark_loss(renderer.landmarks(v_sw, sw.cam), gt)
+            if a.swap_photometric:
+                r_sw, m_sw = renderer.render(v_sw[:n_render], sw[:n_render])
+                l_swap = l_swap + photometric_loss(r_sw, target, m_sw & valid[:n_render])
         l_pho = photometric_loss(render, target, mask & valid[:n_render])
         l_reg = regularization(pred)
-        l_con = consistency_loss(pred.shape) if paired else render.new_zeros(())
-        loss = a.w_lmk * l_lmk + a.w_pho * l_pho + l_reg + a.w_con * l_con
-        return loss, (l_lmk, l_pho, l_reg, l_con), render, mask, img[:n_render]
+        l_con = consistency_loss(pred.shape) if (paired and a.w_con > 0) else render.new_zeros(())
+        loss = (a.w_lmk * l_lmk + a.w_pho * l_pho + l_reg
+                + a.w_con * l_con + a.w_swap * l_swap)
+        return loss, (l_lmk, l_pho, l_reg, l_con, l_swap), render, mask, img[:n_render]
 
     hist = []
     done = 0
     for ep in range(a.epochs):
         enc.train()
         t0 = time.time()
-        agg = np.zeros(5)
+        agg = np.zeros(6)
         n = 0
         for batch in dl:
             opt.zero_grad()
@@ -157,7 +183,7 @@ def main():
         agg /= max(n, 1)
 
         enc.eval()
-        vagg = np.zeros(5)
+        vagg = np.zeros(6)
         m = 0
         with torch.no_grad():
             for batch in vl:
@@ -171,6 +197,7 @@ def main():
         vagg /= max(m, 1)
         hist.append({"epoch": ep, "train": agg.tolist(), "val": vagg.tolist()})
         con = f" con {agg[4]:.4f}" if a.w_con > 0 else ""
+        con += f" swap {agg[5]:.4f}" if a.w_swap > 0 else ""
         print(f"  ep {ep:2d}  train {agg[0]:.4f} (lmk {agg[1]:.4f} pho {agg[2]:.4f}{con})   "
               f"val {vagg[0]:.4f} (lmk {vagg[1]:.4f} pho {vagg[2]:.4f})   "
               f"{time.time() - t0:.0f}s", flush=True)

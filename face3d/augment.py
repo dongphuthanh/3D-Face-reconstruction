@@ -137,6 +137,42 @@ def two_views(img, lmk, weak_strong=True):
 
 
 def consistency_loss(shape):
-    """shape (2B,N) from two_views -> mean squared disagreement between halves."""
+    """shape (2B,N) from two_views -> mean squared disagreement between halves.
+
+    DEPRECATED for training. This is the collapse-prone formulation: it is
+    minimised perfectly by predicting a constant, and measured doing exactly
+    that -- within-subject shape spread fell 3x but between-subject fell 4.4x,
+    driving the identity ratio from 0.42 down to 0.29. Kept because the tests
+    and the earlier ablation reference it. Use swap_shape() instead.
+    """
     a, b = shape.chunk(2, dim=0)
     return (a - b).pow(2).sum(-1).mean()
+
+
+def swap_shape(params):
+    """Exchange the shape halves of a paired-view batch, keeping all else.
+
+    This is DECA's shape-consistency mechanism, adapted to augmented views
+    rather than multiple photographs of one person.
+
+    Why swapping rather than penalising `(shape_A - shape_B)^2`: the distance
+    penalty is a *separate* term from reconstruction, so shape can collapse to a
+    constant (satisfying it perfectly) while pose, expression and camera
+    compensate in the reconstruction. Both terms are then happy and identity is
+    gone -- measured, see consistency_loss above.
+
+    Swapping couples the two into one render. Everything except shape stays
+    specific to its own view, so the other view's shape is the only free
+    variable available to explain this view's pixels and landmarks. A collapsed
+    shape renders the mean face and the landmark loss blows up; a shape carrying
+    pose or lighting information does not transfer to the other view. The only
+    solution is shape that is both invariant to the perturbation and informative
+    about the face.
+
+    Returns params with shape halves exchanged; the caller renders and applies
+    the ordinary reconstruction losses to the result.
+    """
+    a, b = params.shape.chunk(2, dim=0)
+    swapped = torch.cat([b, a], dim=0)
+    from dataclasses import replace
+    return replace(params, shape=swapped)
