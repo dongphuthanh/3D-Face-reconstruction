@@ -89,8 +89,14 @@ by alpha interpolates from the FLAME mean face (0) to the full prediction (1):
 
 | alpha | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 |
 |---|---|---|---|---|---|
-| baseline | **1.355** | 1.417 | 1.507 | 1.651 | 1.841 mm |
-| + C2 skin mask | **1.355** | 1.376 | 1.430 | 1.546 | 1.701 mm |
+| baseline, 5k | **1.355** | 1.417 | 1.507 | 1.651 | 1.841 mm |
+| + C2 skin mask, 5k | **1.355** | 1.376 | 1.430 | 1.546 | 1.701 mm |
+| baseline, 20k | **1.355** | 1.364 | 1.401 | 1.489 | 1.614 mm |
+
+The initial slope -- what a unit of predicted shape costs -- fell from
+0.244 mm per unit alpha at 5k to **0.033 mm at 20k**, a factor of 7.4. The
+deviation is still noise, but noise an order of magnitude closer to parity;
+a dip is what parity becoming benefit would look like.
 
 Both strictly monotonic, with no optimum above zero. Any genuine identity
 signal -- however weak -- would produce a dip at some alpha. There is none, so
