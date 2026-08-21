@@ -17,17 +17,22 @@ import torchvision
 from .params import FlameParams
 
 # The encoder is over-confident about identity: its shape direction correlates
-# with the true face but its magnitude is roughly 4x too large. Measured by
-# sweeping a scale factor over the predicted shape and scoring each on NoW:
+# with the true face but its magnitude overshoots. Measured by sweeping a scale
+# factor over the predicted shape and scoring each on NoW (0.00 is the FLAME
+# mean face, the Bayes-optimal guess under no information):
 #
-#     scale   0.00    0.25    0.50    0.75    1.00    1.25
-#     median 1.3554  1.3300  1.3485  1.4214  1.5296  1.6648 mm
+#   model      0.00    0.25    0.50    0.75    1.00
+#   id_swap   1.3554  1.3300  1.3485  1.4214  1.5296   (2k identities)
+#   digi_all  1.3554  1.3294  1.3241  1.3602  1.4242   (10k identities)
 #
-# 0.00 is the FLAME mean face. The optimum at 0.25 is the only configuration in
-# this project that beats predicting nothing, so it is applied by default.
-# Re-measure with scripts/now_predict.py --shape-scale after any training change;
-# a better-calibrated encoder should push this toward 1.0.
-SHAPE_CALIBRATION = 0.25
+# The optimum moved 0.25 -> 0.50 as identity data scaled 5x, i.e. twice as much
+# of the prediction became usable: better calibration, not just a better score.
+# Extrapolating, an optimum at 1.0 would mean no post-hoc scaling is needed.
+#
+# Re-measure with scripts/now_predict.py --shape-scale after any training
+# change; this constant is an empirical patch over a calibration gap, not a
+# property of the architecture.
+SHAPE_CALIBRATION = 0.50
 
 
 @runtime_checkable

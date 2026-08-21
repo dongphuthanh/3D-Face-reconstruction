@@ -57,6 +57,26 @@ visually convincing and geometrically wrong by 19 mm. **Visual plausibility is
 not evidence of accuracy** — which is why the NoW benchmark, not eyeballing,
 decides whether this works.
 
+**Scaling identity-grouped data beats every loss change.** 10,000 DigiFace
+identities (60,000 images) with the shape swap and an FFHQ mix:
+
+| alpha | 0.00 | 0.25 | **0.50** | 0.75 | 1.00 |
+|---|---|---|---|---|---|
+| id_swap, 2k identities | 1.3554 | **1.3300** | 1.3485 | 1.4214 | 1.5296 mm |
+| digi_all, 10k identities | 1.3554 | 1.3294 | **1.3241** | 1.3602 | 1.4242 mm |
+
+Two things moved. The best score improved to **1.3241 mm** against a mean-face
+baseline of 1.3554, and the optimum shifted from alpha 0.25 to 0.50 -- twice as
+much of the prediction became usable, which is calibration improving rather
+than just a better number. Identity ratio on NoW rose 0.68 -> 0.75, the highest
+measured, while deviation fell to 2.42 mm: more identity-correlated AND less
+over-confident, where every earlier gain traded one for the other.
+
+Worth noting what did NOT work. Arc2Face -- 10k identities of real 448px
+photographs, against DigiFace's synthetic 112px -- reached a better in-domain
+ratio (1.06 vs 0.72) and a worse NoW ratio (0.63 vs 0.75), with no dip at any
+alpha. Neither the FFHQ mix nor DECA's photometric swap changed that.
+
 **Real identity pairs produce the first genuine identity signal.** DECA's
 shape swap needs two images of the same person; augmented views of one image
 only ever taught invariance to the augmentation. DigiFace-1M supplies real
