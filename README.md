@@ -57,6 +57,33 @@ visually convincing and geometrically wrong by 19 mm. **Visual plausibility is
 not evidence of accuracy** — which is why the NoW benchmark, not eyeballing,
 decides whether this works.
 
+**Data moved identity more than any loss change.** Quadrupling the corpus
+from 4,996 to 19,978 images, with no other change:
+
+| configuration | corpus | NoW median | identity ratio |
+|---|---|---|---|
+| DECA (test split) | ~2M, identity-grouped | ~1.09 mm | - |
+| **FLAME mean face** | - | **1.355 mm** | - |
+| baseline | 20k | 1.614 mm | 0.65 |
+| + C2 skin mask | 5k | 1.701 mm | 0.41 |
+| + DECA-style shape swap | 20k | 1.741 mm | 0.60 |
+| baseline | 5k | 1.841 mm | 0.42 |
+
+**Landmarks are a pose signal, not a shape signal.** Replacing one parameter
+group with another sample's value and measuring how far the 105 projected
+landmarks move:
+
+| swapped group | pose | camera | shape | expression |
+|---|---|---|---|---|
+| landmark shift | **17.13 px** | 3.70 px | **1.95 px** | 1.41 px |
+
+Pose moves the landmarks nearly 9x more than shape does, yet the landmark term
+carries weight 5.0 against the photometric term's 1.0. The objective is
+dominated by the one loss that is nearly blind to identity, which is why the
+DECA-style swap changed nothing when routed through it -- swapping shape can
+only perturb that loss by about 1.4%. The swap needs the photometric term,
+where shape has real leverage.
+
 **The shape channel carries no identity signal.** Scaling predicted shape
 by alpha interpolates from the FLAME mean face (0) to the full prediction (1):
 
