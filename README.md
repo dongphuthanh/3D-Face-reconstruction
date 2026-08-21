@@ -57,6 +57,33 @@ visually convincing and geometrically wrong by 19 mm. **Visual plausibility is
 not evidence of accuracy** — which is why the NoW benchmark, not eyeballing,
 decides whether this works.
 
+**Real identity pairs produce the first genuine identity signal.** DECA's
+shape swap needs two images of the same person; augmented views of one image
+only ever taught invariance to the augmentation. DigiFace-1M supplies real
+pairs (2,000 synthetic subjects, 6 renders each, varying pose/expression/light).
+
+Shrinkage sweep -- scaling predicted shape from the FLAME mean (0) to the full
+prediction (1):
+
+| alpha | 0.00 | **0.25** | 0.50 | 0.75 | 1.00 | 1.25 |
+|---|---|---|---|---|---|---|
+| NoW median | 1.3554 | **1.3300** | 1.3485 | 1.4214 | 1.5296 | 1.6648 mm |
+
+**A dip, and it goes below the mean-face baseline.** Every earlier sweep was
+strictly monotonic -- the predicted shape was always worth discarding. This one
+says keep a quarter of it. The direction is right and the magnitude is roughly
+4x too large: the encoder is over-confident, which is a calibration problem
+rather than an absence of signal.
+
+Corroborating: id_swap predicts MORE deviation than the 20k baseline (3.23 mm
+vs 3.03) and scores BETTER (1.530 vs 1.614). Noise added to a good prior cannot
+do that; only deviation correlated with the truth can. Every previous
+"improvement" had the opposite fingerprint -- less deviation, drifting toward
+the mean.
+
+Against its matched control (same data, swap off) the swap is worth 11% on NoW
+(1.710 -> 1.530) and moves the in-domain ratio 0.67 -> 0.72.
+
 **Data moved identity more than any loss change.** Quadrupling the corpus
 from 4,996 to 19,978 images, with no other change:
 
