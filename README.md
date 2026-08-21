@@ -57,6 +57,20 @@ visually convincing and geometrically wrong by 19 mm. **Visual plausibility is
 not evidence of accuracy** — which is why the NoW benchmark, not eyeballing,
 decides whether this works.
 
+**Identity scale helps, but shallowly.** Best NoW median against the
+FLAME mean face at 1.3554 mm, each at its own optimal shape scale:
+
+| identities | best median | vs mean face | optimal alpha |
+|---|---|---|---|
+| 2,000 | 1.3300 mm | -1.9% | 0.25 |
+| 10,000 | 1.3241 mm | -2.3% | 0.50 |
+| **110,000 (all of DigiFace)** | **1.3109 mm** | **-3.3%** | 0.50 |
+
+55x the identities bought 1.4%. The calibration optimum moved 0.25 -> 0.50
+between the first two and then stopped, so the encoder is no better calibrated
+at 110k than at 10k. Extrapolating this curve to SC1's 1.20 mm target would
+need orders of magnitude more identity-grouped data than DigiFace contains.
+
 **Scaling identity-grouped data beats every loss change.** 10,000 DigiFace
 identities (60,000 images) with the shape swap and an FFHQ mix:
 
