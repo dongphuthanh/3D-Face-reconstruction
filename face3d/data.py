@@ -98,18 +98,43 @@ class IdentityPairs(Dataset):
         chosen = order[n_val:] if split == "train" else order[:n_val]
 
         self.groups = [np.array(groups[ids[i]]) for i in chosen]
-        self.keys, self.lmk = keys, lmk
         self.dir = root / "crops"
+        self.cache = cache
         self.rng = np.random.default_rng(seed + 1)
+
+        # Keys and landmarks are NOT stored on the instance. On Windows,
+        # DataLoader workers are spawned and the dataset is pickled through a
+        # pipe; at 110k identities that array is 444 MB and the pipe rejects it
+        # with OSError [Errno 22], which reads as a mysterious spawn failure
+        # rather than a size limit. Each worker loads its own copy lazily
+        # instead, so only paths and index arrays cross the pipe.
+        self._keys = None
+        self._lmk = None
+
+    def _arrays(self):
+        if self._lmk is None:
+            z = np.load(self.cache)
+            self._keys = np.array([str(k) for k in z["keys"]])
+            self._lmk = z["landmarks"].astype(np.float32)
+        return self._keys, self._lmk
+
+    @property
+    def keys(self):
+        return self._arrays()[0]
+
+    @property
+    def lmk(self):
+        return self._arrays()[1]
 
     def __len__(self):
         return len(self.groups)
 
     def _load(self, i):
-        im = Image.open(self.dir / f"{self.keys[i]}.jpg").convert("RGB")
+        keys, lmk = self._arrays()
+        im = Image.open(self.dir / f"{keys[i]}.jpg").convert("RGB")
         arr = np.array(im, dtype=np.uint8)
         return (torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0,
-                torch.from_numpy(self.lmk[i]),
+                torch.from_numpy(lmk[i]),
                 torch.from_numpy((arr.sum(-1) > 0).astype(np.float32)))
 
     def __getitem__(self, k):
