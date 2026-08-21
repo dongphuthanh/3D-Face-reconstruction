@@ -260,6 +260,16 @@ implementation plan for the full register.
 | FLAME 2023 Open | same | Yes (CC-BY-4.0) |
 | NoW benchmark | now.is.tue.mpg.de | No |
 | DECA weights | DECA repo | **No** |
+| FFHQ (permissive subset) | NVlabs | Yes (CC BY / PD / CC0) |
+| DigiFace-1M | Microsoft | Data no; trained models yes (R-UDA) |
+| Arc2Face | HuggingFace | CC BY-NC-SA 4.0, ShareAlike |
+
+Arc2Face is derived from WebFace42M, i.e. scraped source images. The CC licence
+covers the authors' restoration work, not the provenance of what was restored,
+and ShareAlike may bind models trained on it. It is used because 448px real
+photographs with 30k identities per archive is what the identity signal needs;
+the trade against the project's no-scraping rule is deliberate and recorded
+here rather than glossed.
 
 **This project is non-commercial.** DECA's licence forbids distributing the
 model, so shipping DECA-derived weights to a browser is not possible; on-device

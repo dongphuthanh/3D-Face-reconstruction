@@ -37,6 +37,12 @@ data/ffhq/
 # same terms. The ingest recipe is tracked; the data is not.
 data/digiface/
 
+# Arc2Face: CC BY-NC-SA 4.0. Derived from WebFace42M, i.e. scraped source
+# images -- the licence covers the authors' restoration work, not the
+# provenance of what it restored. Never redistribute; the ingest reads it
+# remotely and only the recipe is tracked.
+data/arc2face/
+
 # ---------------------------------------------------------------------------
 # Generated output
 # ---------------------------------------------------------------------------
