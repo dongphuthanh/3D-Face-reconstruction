@@ -37,11 +37,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default=str(ROOT / "runs" / "ffhq" / "encoder.pt"))
     ap.add_argument("--limit", type=int, default=200)
+    ap.add_argument("--identity-data", default="",
+                    help="measure on held-out identities from an identity-grouped "
+                         "ingest instead of NoW. Separates 'did it learn identity' "
+                         "(in-domain) from 'does it transfer to photographs'")
     a = ap.parse_args()
 
     ckpt = pathlib.Path(a.checkpoint)
-    if not (ckpt.exists() and IMAGES.exists()):
-        print("SKIP - needs a checkpoint and the NoW images")
+    if not ckpt.exists():
+        print(f"SKIP - no checkpoint at {ckpt}")
+        sys.exit(0)
+    if not a.identity_data and not IMAGES.exists():
+        print("SKIP - needs the NoW images, or --identity-data")
         sys.exit(0)
 
     flame = FlameTorch(assets.model_path_or_skip()).to(DEV)
@@ -49,20 +56,38 @@ def main():
     enc.load_state_dict(torch.load(ckpt, map_location=DEV)["model"])
     enc.eval()
 
-    det = FaceDetector(blendshapes=False)
     shapes, subjects = [], []
-    for rel in now.image_list(ROOT, "validation")[: a.limit]:
-        im = np.asarray(Image.open(IMAGES / rel).convert("RGB"))
-        r = det.detect(im)
-        if r is None:
-            continue
-        crop, _ = crop_square(im, r["norm"], size=224)
-        x = torch.from_numpy(np.ascontiguousarray(crop)).permute(2, 0, 1)[None]
-        with torch.no_grad():
-            p = enc.predict(x.float().to(DEV) / 255.0)
-        shapes.append(p.shape[0].cpu().numpy())
-        subjects.append(rel.split("/")[0])
-    det.close()
+    if a.identity_data:
+        # Crops are already detected and cropped at ingest, so no detector here.
+        from face3d.data import IdentityPairs
+        ds = IdentityPairs(pathlib.Path(a.identity_data), 224, "val")
+        n = 0
+        for k in range(len(ds)):
+            g = ds.groups[k]
+            for i in g:
+                im = Image.open(ds.dir / f"{ds.keys[i]}.jpg").convert("RGB")
+                x = torch.from_numpy(np.array(im, np.uint8)).permute(2, 0, 1)[None]
+                with torch.no_grad():
+                    p = enc.predict(x.float().to(DEV) / 255.0)
+                shapes.append(p.shape[0].cpu().numpy())
+                subjects.append(str(k))
+                n += 1
+            if n >= a.limit:
+                break
+    else:
+        det = FaceDetector(blendshapes=False)
+        for rel in now.image_list(ROOT, "validation")[: a.limit]:
+            im = np.asarray(Image.open(IMAGES / rel).convert("RGB"))
+            r = det.detect(im)
+            if r is None:
+                continue
+            crop, _ = crop_square(im, r["norm"], size=224)
+            x = torch.from_numpy(np.ascontiguousarray(crop)).permute(2, 0, 1)[None]
+            with torch.no_grad():
+                p = enc.predict(x.float().to(DEV) / 255.0)
+            shapes.append(p.shape[0].cpu().numpy())
+            subjects.append(rel.split("/")[0])
+        det.close()
 
     S = np.stack(shapes)
     subj = np.array(subjects)
@@ -84,7 +109,9 @@ def main():
         v, _ = flame(full)
         dev_mm = float((v - v0).norm(dim=-1).mean().item() * 1000)
 
-    print(f"checkpoint: {ckpt}")
+    print(f"checkpoint: {ckpt}"
+          + (f"   [in-domain: {a.identity_data}]" if a.identity_data
+             else "   [NoW photographs]"))
     print(f"  {len(S)} images across {len(means)} subjects")
     print("")
     print(f"  within-subject  spread  {within:.3f}")
