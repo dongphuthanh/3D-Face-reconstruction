@@ -1,8 +1,17 @@
-"""Dataset over the ingested FFHQ crops.
+"""Datasets over the ingested crops.
 
 Landmarks are cached in NDC at ingest time so the detector does not run during
 training -- MediaPipe would otherwise dominate step time and cannot be batched
 on the GPU.
+
+Two datasets, because they supply different things:
+
+  FFHQCrops     real photographs, one per person. Carries the landmark and
+                photometric terms, and keeps the model anchored on the real
+                image distribution it will be asked about.
+  IdentityPairs identity-grouped renders. Returns two DIFFERENT images of the
+                same subject, which is the constraint the shape swap needs and
+                the one thing no amount of augmentation could substitute for.
 """
 
 import pathlib
@@ -50,3 +59,74 @@ class FFHQCrops(Dataset):
         valid = torch.from_numpy((arr.sum(-1) > 0).astype(np.float32))
         return {"image": img, "landmarks": torch.from_numpy(self.lmk[i]),
                 "valid": valid, "key": self.keys[i]}
+
+
+class IdentityPairs(Dataset):
+    """Two different images of one subject, batched so halves match by identity.
+
+    Item i returns a pair. Collated into a batch of B pairs, the default
+    collate gives tensors of shape (B, 2, ...); `flatten_pairs` reshapes those
+    into the (2B, ...) layout that swap_shape expects, with the two halves
+    aligned by identity. That is the same layout `two_views` produces, so the
+    swap loss needs no change -- only its meaning does. Augmented views only
+    ever taught invariance to the augmentation; these are genuinely different
+    images of one face.
+    """
+
+    def __init__(self, root, size=224, split="train", val_frac=0.05, seed=0,
+                 min_images=2):
+        root = pathlib.Path(root)
+        cache = root / f"landmarks_{size}.npz"
+        if not cache.exists():
+            raise FileNotFoundError(
+                f"{cache} not found - run scripts/ingest_digiface.py first")
+        z = np.load(cache)
+        keys = np.array([str(k) for k in z["keys"]])
+        lmk = z["landmarks"].astype(np.float32)
+        subj = np.array([str(s) for s in z["subject"]])
+
+        groups = {}
+        for i, s in enumerate(subj):
+            groups.setdefault(s, []).append(i)
+        ids = sorted(s for s, idx in groups.items() if len(idx) >= min_images)
+
+        # Split by identity, not by image: the same person must never appear in
+        # both train and val, or the held-out score measures memorisation.
+        rng = np.random.default_rng(seed)
+        order = rng.permutation(len(ids))
+        n_val = max(1, int(len(ids) * val_frac))
+        chosen = order[n_val:] if split == "train" else order[:n_val]
+
+        self.groups = [np.array(groups[ids[i]]) for i in chosen]
+        self.keys, self.lmk = keys, lmk
+        self.dir = root / "crops"
+        self.rng = np.random.default_rng(seed + 1)
+
+    def __len__(self):
+        return len(self.groups)
+
+    def _load(self, i):
+        im = Image.open(self.dir / f"{self.keys[i]}.jpg").convert("RGB")
+        arr = np.array(im, dtype=np.uint8)
+        return (torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0,
+                torch.from_numpy(self.lmk[i]),
+                torch.from_numpy((arr.sum(-1) > 0).astype(np.float32)))
+
+    def __getitem__(self, k):
+        g = self.groups[k]
+        a, b = self.rng.choice(len(g), size=2, replace=False)
+        ia, ib = self._load(g[a]), self._load(g[b])
+        return {"image": torch.stack([ia[0], ib[0]]),
+                "landmarks": torch.stack([ia[1], ib[1]]),
+                "valid": torch.stack([ia[2], ib[2]])}
+
+
+def flatten_pairs(batch):
+    """(B,2,...) -> (2B,...) with view A stacked above view B, halves aligned."""
+    out = {}
+    for k, v in batch.items():
+        if torch.is_tensor(v) and v.dim() >= 2 and v.shape[1] == 2:
+            out[k] = torch.cat([v[:, 0], v[:, 1]], dim=0)
+        else:
+            out[k] = v
+    return out

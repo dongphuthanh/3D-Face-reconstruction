@@ -24,7 +24,7 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d import assets
 from face3d.albedo import CACHE_DIR, FlameTexture
-from face3d.data import FFHQCrops
+from face3d.data import FFHQCrops, IdentityPairs, flatten_pairs
 from face3d.encoder import ResNetEncoder
 from face3d.facemask import face_faces, face_region
 from face3d.flame_torch import FlameTorch
@@ -54,6 +54,11 @@ def main():
     ap.add_argument("--swap-photometric", action="store_true",
                     help="also apply the photometric term to the swapped render "
                          "(costs one more rasterisation)")
+    ap.add_argument("--identity-data", default="",
+                    help="root of an identity-grouped ingest (e.g. data/digiface). "
+                         "Feeds the swap loss REAL pairs -- two different images "
+                         "of one subject -- instead of two augmentations of one "
+                         "image, which only ever taught augmentation invariance")
     ap.add_argument("--pair", action="store_true",
                     help="build paired views even when --w-con is 0, so the swap "
                          "loss can be used on its own")
@@ -87,8 +92,13 @@ def main():
     renderer = FaceRenderer(flame, lmk_idx=emb, image_size=a.size, texture=tex,
                             face_keep=keep)
 
-    tr = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train")
-    va = FFHQCrops(ROOT / "data" / "ffhq", a.size, "val")
+    if a.identity_data:
+        root = pathlib.Path(a.identity_data)
+        tr = IdentityPairs(root, a.size, "train")
+        va = IdentityPairs(root, a.size, "val")
+    else:
+        tr = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train")
+        va = FFHQCrops(ROOT / "data" / "ffhq", a.size, "val")
     dl = DataLoader(tr, batch_size=a.batch, shuffle=True, num_workers=4,
                     drop_last=True, persistent_workers=True)
     vl = DataLoader(va, batch_size=a.batch, num_workers=2)
@@ -103,7 +113,11 @@ def main():
     steps = max(1, a.epochs * per_epoch)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, a.lr, total_steps=steps, pct_start=0.1)
 
-    print(f"=== training on {len(tr)} images ({len(va)} held out), {DEV} ===")
+    unit = "identities" if a.identity_data else "images"
+    print(f"=== training on {len(tr)} {unit} ({len(va)} held out), {DEV} ===")
+    if a.identity_data:
+        print(f"    identity pairs from {a.identity_data} "
+              f"(two different images per subject, split by identity)")
     print(f"    {a.epochs} epochs x {per_epoch} steps = {steps}, batch {a.batch}, lr {a.lr}"
           + (", backbone frozen" if a.freeze_backbone else ""))
     print(f"    consistency weight: {a.w_con}   swap weight: {a.w_swap}"
@@ -117,10 +131,14 @@ def main():
     print("")
 
     def step(batch, augment=True):
+        prepaired = bool(a.identity_data)
+        if prepaired:
+            # (B,2,...) -> (2B,...), halves aligned by subject.
+            batch = flatten_pairs(batch)
         img = batch["image"].to(DEV, non_blocking=True)
         gt = batch["landmarks"].to(DEV, non_blocking=True)
-        paired = (a.w_con > 0 or a.w_swap > 0 or a.pair) and augment
-        if paired:
+        paired = prepaired or ((a.w_con > 0 or a.w_swap > 0 or a.pair) and augment)
+        if paired and not prepaired:
             img, gt = two_views(img, gt)
         # Validity is recomputed from pixels rather than taken from the cache:
         # a rotated or scaled view has its own black borders, so the ingest-time

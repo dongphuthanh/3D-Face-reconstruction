@@ -33,6 +33,10 @@ data/photos/
 # reproducible from scripts/ingest_ffhq.py, so only the recipe is tracked.
 data/ffhq/
 
+# DigiFace-1M: R-UDA v1.0, redistribution requires binding recipients to the
+# same terms. The ingest recipe is tracked; the data is not.
+data/digiface/
+
 # ---------------------------------------------------------------------------
 # Generated output
 # ---------------------------------------------------------------------------
