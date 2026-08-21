@@ -64,6 +64,12 @@ def main():
     ap.add_argument("--out", default=str(ROOT / "out" / "now_pred"))
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--size", type=int, default=224)
+    ap.add_argument("--crop-margin", type=float, default=1.6,
+                    help="must match the margin the model was ingested with. "
+                         "Arc2Face used 1.15 (its sources are pre-cropped); FFHQ "
+                         "and DigiFace used 1.6. A mismatch is a distribution "
+                         "shift that shows up as inflated deviation and a "
+                         "collapsed identity ratio")
     ap.add_argument("--shape-scale", type=float, default=None,
                     help="override the encoder's calibration; defaults to "
                          "SHAPE_CALIBRATION. Set 1.0 for the raw prediction")
@@ -105,7 +111,7 @@ def main():
 
         res = det.detect(im)
         if res is not None:
-            crop, _ = crop_square(im, res["norm"], size=a.size)
+            crop, _ = crop_square(im, res["norm"], size=a.size, margin=a.crop_margin)
             stats["detected"] += 1
             path_of[rel] = "mediapipe"
         else:

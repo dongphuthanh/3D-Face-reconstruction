@@ -37,6 +37,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default=str(ROOT / "runs" / "ffhq" / "encoder.pt"))
     ap.add_argument("--limit", type=int, default=200)
+    ap.add_argument("--crop-margin", type=float, default=1.6,
+                    help="must match the margin the model was ingested with. "
+                         "Arc2Face used 1.15 (its sources are pre-cropped); FFHQ "
+                         "and DigiFace used 1.6. A mismatch is a distribution "
+                         "shift that shows up as inflated deviation and a "
+                         "collapsed identity ratio")
     ap.add_argument("--identity-data", default="",
                     help="measure on held-out identities from an identity-grouped "
                          "ingest instead of NoW. Separates 'did it learn identity' "
@@ -81,7 +87,7 @@ def main():
             r = det.detect(im)
             if r is None:
                 continue
-            crop, _ = crop_square(im, r["norm"], size=224)
+            crop, _ = crop_square(im, r["norm"], size=224, margin=a.crop_margin)
             x = torch.from_numpy(np.ascontiguousarray(crop)).permute(2, 0, 1)[None]
             with torch.no_grad():
                 p = enc.predict(x.float().to(DEV) / 255.0)
