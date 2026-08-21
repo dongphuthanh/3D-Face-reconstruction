@@ -25,7 +25,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d import assets
 from face3d.albedo import CACHE_DIR, FlameTexture
 from face3d.data import FFHQCrops, IdentityPairs, flatten_pairs
-from face3d.encoder import ResNetEncoder
+from face3d.encoder import ArcFaceShapeEncoder, ResNetEncoder
 from face3d.facemask import face_faces, face_region
 from face3d.flame_torch import FlameTorch
 from face3d.landmarks import LandmarkEmbedding
@@ -67,6 +67,11 @@ def main():
                          "model is actually asked about")
     ap.add_argument("--mix-batch", type=int, default=0,
                     help="FFHQ batch size for the mix; defaults to --batch")
+    ap.add_argument("--arcface", action="store_true",
+                    help="MICA-style: take shape from a cached ArcFace identity "
+                         "embedding instead of the ResNet trunk. The other five "
+                         "output groups still come from pixels, since they work. "
+                         "Requires scripts/embed_arcface.py to have been run")
     ap.add_argument("--pair", action="store_true",
                     help="build paired views even when --w-con is 0, so the swap "
                          "loss can be used on its own")
@@ -102,8 +107,8 @@ def main():
 
     if a.identity_data:
         root = pathlib.Path(a.identity_data)
-        tr = IdentityPairs(root, a.size, "train")
-        va = IdentityPairs(root, a.size, "val")
+        tr = IdentityPairs(root, a.size, "train", embeddings=a.arcface)
+        va = IdentityPairs(root, a.size, "val", embeddings=a.arcface)
     else:
         tr = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train")
         va = FFHQCrops(ROOT / "data" / "ffhq", a.size, "val")
@@ -118,7 +123,8 @@ def main():
                             num_workers=2, drop_last=True, persistent_workers=True)
         print(f"    mixing {len(mix_ds)} FFHQ photographs at weight {a.mix_ffhq}")
 
-    enc = ResNetEncoder(n_shape=100, n_expr=50, pretrained=True).to(DEV)
+    Enc = ArcFaceShapeEncoder if a.arcface else ResNetEncoder
+    enc = Enc(n_shape=100, n_expr=50, pretrained=True).to(DEV)
     if a.freeze_backbone:
         for p in enc.trunk.parameters():
             p.requires_grad = False
@@ -138,6 +144,9 @@ def main():
     print(f"    consistency weight: {a.w_con}   swap weight: {a.w_swap}"
           + ("  (paired views, batch doubles)" if (a.w_con > 0 or a.w_swap > 0 or a.pair)
              else "  (off)"))
+    print(f"    shape source: "
+          + ("ArcFace embedding (512-d) -> MLP" if a.arcface
+             else "ResNet trunk (pixels)"))
     print(f"    skin mask: "
           + (f"radius {a.skin_mask} m, {int(keep.sum())}/{flame.n_faces} triangles"
              if keep is not None else "OFF (whole silhouette)"))
@@ -159,7 +168,10 @@ def main():
         # a rotated or scaled view has its own black borders, so the ingest-time
         # mask no longer describes this image.
         valid = img.sum(1) > 0
-        pred = enc.predict(img)
+        emb = batch.get("embedding")
+        if emb is not None:
+            emb = emb.to(DEV, non_blocking=True)
+        pred = enc.predict(img, embedding=emb) if a.arcface else enc.predict(img)
         verts, _ = renderer.geometry(pred)
 
         # Landmarks and regularisation are computed on every view: they need

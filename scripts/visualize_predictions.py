@@ -85,7 +85,9 @@ def main():
         crop, _ = crop_square(im, r["norm"], size=SIZE)
         x = torch.from_numpy(np.ascontiguousarray(crop)).permute(2, 0, 1)[None]
         with torch.no_grad():
-            p = enc.predict(x.float().to(DEV) / 255.0)
+            # calibrate=True: what a user actually gets. The raw shape
+            # prediction overshoots and is halved at inference.
+            p = enc.predict(x.float().to(DEV) / 255.0, calibrate=True)
         return crop / 255.0, p
 
     # A fixed frontal camera and flat lighting for every neutral render, so the

@@ -126,3 +126,50 @@ class ResNetEncoder(nn.Module, Encoder):
         pose[:, 6:9] = rot6[:, 3:6]
         return FlameParams(shape=shape, expr=expr, pose=pose, cam=cam,
                            light=light.view(B, 9, 3), albedo=albedo)
+
+
+class ArcFaceShapeEncoder(ResNetEncoder):
+    """MICA-style: identity comes from a face-recognition embedding, not pixels.
+
+    Five of the six output groups already work -- pose, expression, camera,
+    lighting and albedo all transfer visibly -- so the ResNet trunk keeps them.
+    Only the shape head is replaced, because that is the one measured to be
+    inert: between/within subject spread of 0.76 on NoW, meaning shape varies
+    almost as much across photographs of one person as across different people.
+
+    An ArcFace embedding of the same images scores 1.56 on that measure. It was
+    trained on millions of faces to encode identity while discarding pose and
+    lighting, which is precisely what our shape head kept absorbing. Mapping
+    512-d -> shape is a small, low-dimensional problem; extracting identity from
+    a 1-2 px signal in pixels is not.
+
+    MICA uses a single linear layer here and trains it against registered 3D
+    scans. Without scans the mapping is learned through the same self-supervised
+    losses as before, so an MLP with one hidden layer is used instead -- the
+    supervision is weaker and a little more capacity is warranted.
+    """
+
+    def __init__(self, n_shape=100, n_expr=50, n_albedo=50, arch="resnet50",
+                 pretrained=False, embed_dim=512, hidden=512):
+        super().__init__(n_shape=n_shape, n_expr=n_expr, n_albedo=n_albedo,
+                         arch=arch, pretrained=pretrained)
+        self.embed_dim = embed_dim
+        self.shape_head = nn.Sequential(
+            nn.Linear(embed_dim, hidden), nn.ReLU(inplace=True),
+            nn.Linear(hidden, n_shape))
+        # Start at the mean face, as the ResNet head does: a random init here
+        # renders a distorted head on step one and the photometric term has
+        # nothing useful to say about it.
+        nn.init.normal_(self.shape_head[0].weight, std=1e-2)
+        nn.init.zeros_(self.shape_head[0].bias)
+        nn.init.normal_(self.shape_head[2].weight, std=1e-3)
+        nn.init.zeros_(self.shape_head[2].bias)
+
+    def predict(self, image, calibrate: bool = False, embedding=None):
+        p = self(image)
+        if embedding is not None:
+            # ArcFace embeddings are unit-normalised; cached as float16.
+            p = replace(p, shape=self.shape_head(embedding.to(p.shape.dtype)))
+        if calibrate:
+            p = replace(p, shape=p.shape * SHAPE_CALIBRATION)
+        return p

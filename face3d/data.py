@@ -74,7 +74,7 @@ class IdentityPairs(Dataset):
     """
 
     def __init__(self, root, size=224, split="train", val_frac=0.05, seed=0,
-                 min_images=2):
+                 min_images=2, embeddings=False):
         root = pathlib.Path(root)
         cache = root / f"landmarks_{size}.npz"
         if not cache.exists():
@@ -84,6 +84,21 @@ class IdentityPairs(Dataset):
         keys = np.array([str(k) for k in z["keys"]])
         lmk = z["landmarks"].astype(np.float32)
         subj = np.array([str(s) for s in z["subject"]])
+
+        # Only a subset may have ArcFace embeddings computed, so restrict to
+        # those rather than failing partway through an epoch.
+        self.emb_cache = root / f"arcface_{size}.npz" if embeddings else None
+        if self.emb_cache is not None:
+            if not self.emb_cache.exists():
+                raise FileNotFoundError(
+                    f"{self.emb_cache} not found - run scripts/embed_arcface.py")
+            with np.load(self.emb_cache) as ze:
+                embedded = {str(k) for k in ze["keys"]}
+            keep = np.flatnonzero([k in embedded for k in keys])
+            keys, lmk, subj = keys[keep], lmk[keep], subj[keep]
+            self._keep = keep          # indices into the full cache, applied lazily
+        else:
+            self._keep = None
 
         groups = {}
         for i, s in enumerate(subj):
@@ -110,13 +125,29 @@ class IdentityPairs(Dataset):
         # instead, so only paths and index arrays cross the pipe.
         self._keys = None
         self._lmk = None
+        self._emb = None
 
     def _arrays(self):
         if self._lmk is None:
             z = np.load(self.cache)
-            self._keys = np.array([str(k) for k in z["keys"]])
-            self._lmk = z["landmarks"].astype(np.float32)
+            k = np.array([str(x) for x in z["keys"]])
+            l = z["landmarks"].astype(np.float32)
+            if self._keep is not None:
+                # Same filter the constructor applied, so `groups` indices still
+                # line up -- but only the small index array crosses the pickle.
+                k, l = k[self._keep], l[self._keep]
+            self._keys, self._lmk = k, l
         return self._keys, self._lmk
+
+    def _embeddings(self):
+        """Lazy per-worker, same reasoning as the landmarks."""
+        if self._emb is None:
+            with np.load(self.emb_cache) as z:
+                lut = {str(k): i for i, k in enumerate(z["keys"])}
+                arr = z["embeddings"]
+                keys, _ = self._arrays()
+                self._emb = np.stack([arr[lut[k]] for k in keys]).astype(np.float32)
+        return self._emb
 
     @property
     def keys(self):
@@ -141,9 +172,14 @@ class IdentityPairs(Dataset):
         g = self.groups[k]
         a, b = self.rng.choice(len(g), size=2, replace=False)
         ia, ib = self._load(g[a]), self._load(g[b])
-        return {"image": torch.stack([ia[0], ib[0]]),
-                "landmarks": torch.stack([ia[1], ib[1]]),
-                "valid": torch.stack([ia[2], ib[2]])}
+        out = {"image": torch.stack([ia[0], ib[0]]),
+               "landmarks": torch.stack([ia[1], ib[1]]),
+               "valid": torch.stack([ia[2], ib[2]])}
+        if self.emb_cache is not None:
+            e = self._embeddings()
+            out["embedding"] = torch.stack([torch.from_numpy(e[g[a]]),
+                                            torch.from_numpy(e[g[b]])])
+        return out
 
 
 def flatten_pairs(batch):
