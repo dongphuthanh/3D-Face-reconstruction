@@ -26,7 +26,7 @@ from PIL import Image
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d import assets, now
 from face3d.detect import FaceDetector, crop_square
-from face3d.encoder import ResNetEncoder
+from face3d.encoder import ArcFaceShapeEncoder, ResNetEncoder
 from face3d.flame_torch import FlameTorch
 from face3d.landmarks import LandmarkEmbedding
 from face3d.params import FlameParams
@@ -86,9 +86,28 @@ def main():
     emb = LandmarkEmbedding(
         ROOT / "mediapipe_landmark_embedding" / "mediapipe_landmark_embedding.npz",
         device=DEV)
-    enc = ResNetEncoder(n_shape=100, n_expr=50, pretrained=False).to(DEV)
-    enc.load_state_dict(torch.load(ckpt, map_location=DEV)["model"])
+    blob = torch.load(ckpt, map_location=DEV)
+    is_arc = bool(blob.get("args", {}).get("arcface"))
+    Enc = ArcFaceShapeEncoder if is_arc else ResNetEncoder
+    enc = Enc(n_shape=100, n_expr=50, pretrained=False).to(DEV)
+    enc.load_state_dict(blob["model"])
     enc.eval()
+
+    arcface = None
+    if is_arc:
+        import os, warnings
+        warnings.filterwarnings("ignore")
+        from insightface.model_zoo import get_model
+        arcface = get_model(os.path.expanduser(
+            "~/.insightface/models/buffalo_l/w600k_r50.onnx"))
+        arcface.prepare(ctx_id=0)
+
+    def embed(crop_uint8):
+        if arcface is None:
+            return None
+        small = np.asarray(Image.fromarray(crop_uint8).resize((112, 112)))[:, :, ::-1]
+        e = arcface.get_feat(np.ascontiguousarray(small)).ravel().astype(np.float32)
+        return torch.from_numpy(e / (np.linalg.norm(e) + 1e-8))[None].to(DEV)
 
     rels = now.image_list(ROOT, a.split)
     if a.limit:
@@ -125,7 +144,7 @@ def main():
         x = torch.from_numpy(np.ascontiguousarray(crop)).permute(2, 0, 1)[None]
         x = x.float().to(DEV) / 255.0
         with torch.no_grad():
-            pred = enc.predict(x)
+            pred = enc.predict(x, embedding=embed(crop)) if is_arc else enc.predict(x)
             from face3d.encoder import SHAPE_CALIBRATION
             scale = SHAPE_CALIBRATION if a.shape_scale is None else a.shape_scale
             if scale != 1.0:

@@ -146,7 +146,14 @@ class IdentityPairs(Dataset):
                 lut = {str(k): i for i, k in enumerate(z["keys"])}
                 arr = z["embeddings"]
                 keys, _ = self._arrays()
-                self._emb = np.stack([arr[lut[k]] for k in keys]).astype(np.float32)
+                e = np.stack([arr[lut[k]] for k in keys]).astype(np.float32)
+                # L2-normalise. ArcFace identity is ANGULAR -- cosine similarity
+                # under an additive angular margin -- and the raw feature's
+                # magnitude (here 8.3 to 27.0) encodes detection confidence, not
+                # who the person is. rec.get_feat() returns the unnormalised
+                # feature; FaceAnalysis exposes normed_embedding. Feeding raw
+                # magnitudes hands the MLP 3x variation that is not identity.
+                self._emb = e / (np.linalg.norm(e, axis=1, keepdims=True) + 1e-8)
         return self._emb
 
     @property

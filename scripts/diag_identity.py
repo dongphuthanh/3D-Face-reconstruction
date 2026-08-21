@@ -25,7 +25,7 @@ from PIL import Image
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d import assets, now
 from face3d.detect import FaceDetector, crop_square
-from face3d.encoder import ResNetEncoder
+from face3d.encoder import ArcFaceShapeEncoder, ResNetEncoder
 from face3d.flame_torch import FlameTorch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -58,9 +58,35 @@ def main():
         sys.exit(0)
 
     flame = FlameTorch(assets.model_path_or_skip()).to(DEV)
-    enc = ResNetEncoder(n_shape=100, n_expr=50, pretrained=False).to(DEV)
-    enc.load_state_dict(torch.load(ckpt, map_location=DEV)["model"])
+    # Build whichever encoder the checkpoint was trained as. The saved args
+    # record it, so the diagnostic never has to be told.
+    blob = torch.load(ckpt, map_location=DEV)
+    is_arc = bool(blob.get("args", {}).get("arcface"))
+    Enc = ArcFaceShapeEncoder if is_arc else ResNetEncoder
+    enc = Enc(n_shape=100, n_expr=50, pretrained=False).to(DEV)
+    enc.load_state_dict(blob["model"])
     enc.eval()
+
+    # An ArcFace model needs an embedding per image. NoW crops have none cached,
+    # so compute them here -- 42 ms each, negligible for a few hundred images.
+    arcface = None
+    if is_arc:
+        import os, warnings
+        warnings.filterwarnings("ignore")
+        from insightface.model_zoo import get_model
+        w = os.path.expanduser("~/.insightface/models/buffalo_l/w600k_r50.onnx")
+        arcface = get_model(w)
+        arcface.prepare(ctx_id=0)
+
+    def embed(crop_uint8):
+        """L2-normalised, matching how the dataset serves cached embeddings."""
+        if arcface is None:
+            return None
+        from PIL import Image as _I
+        small = np.asarray(_I.fromarray(crop_uint8).resize((112, 112)))[:, :, ::-1]
+        e = arcface.get_feat(np.ascontiguousarray(small)).ravel().astype(np.float32)
+        e = e / (np.linalg.norm(e) + 1e-8)
+        return torch.from_numpy(e)[None].to(DEV)
 
     shapes, subjects = [], []
     if a.identity_data:
@@ -72,9 +98,10 @@ def main():
             g = ds.groups[k]
             for i in g:
                 im = Image.open(ds.dir / f"{ds.keys[i]}.jpg").convert("RGB")
-                x = torch.from_numpy(np.array(im, np.uint8)).permute(2, 0, 1)[None]
+                arr = np.array(im, np.uint8)
+                x = torch.from_numpy(arr).permute(2, 0, 1)[None]
                 with torch.no_grad():
-                    p = enc.predict(x.float().to(DEV) / 255.0)
+                    p = enc.predict(x.float().to(DEV) / 255.0, embedding=embed(arr))                         if is_arc else enc.predict(x.float().to(DEV) / 255.0)
                 shapes.append(p.shape[0].cpu().numpy())
                 subjects.append(str(k))
                 n += 1
@@ -90,7 +117,7 @@ def main():
             crop, _ = crop_square(im, r["norm"], size=224, margin=a.crop_margin)
             x = torch.from_numpy(np.ascontiguousarray(crop)).permute(2, 0, 1)[None]
             with torch.no_grad():
-                p = enc.predict(x.float().to(DEV) / 255.0)
+                p = enc.predict(x.float().to(DEV) / 255.0, embedding=embed(crop))                     if is_arc else enc.predict(x.float().to(DEV) / 255.0)
             shapes.append(p.shape[0].cpu().numpy())
             subjects.append(rel.split("/")[0])
         det.close()

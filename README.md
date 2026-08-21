@@ -57,6 +57,29 @@ visually convincing and geometrically wrong by 19 mm. **Visual plausibility is
 not evidence of accuracy** — which is why the NoW benchmark, not eyeballing,
 decides whether this works.
 
+**A better identity signal is not the same as a better 3D shape.** MICA
+replaces the pixel-derived shape head with an ArcFace identity embedding and
+beats DECA while training on ~2,300 subjects. Probed on NoW first, the premise
+held: between/within subject spread of 1.56 for the ArcFace embedding against
+0.76 for our encoder's shape output.
+
+Wired in as `ArcFaceShapeEncoder` -- shape from a cached 512-d embedding, the
+other five output groups still from the ResNet trunk, everything else matched
+to the pixel-based run:
+
+| | pixels (digi_full) | ArcFace embedding |
+|---|---|---|
+| identity ratio on NoW | 0.76 | **0.85** |
+| best NoW median | **1.3109 mm** | 1.3409 mm |
+
+Best identity separation the project has produced, and a worse 3D score. The
+embedding encodes what distinguishes faces for *recognition* -- much of it
+texture and feature spacing that does not map onto FLAME's geometry basis.
+Converting "who this is" into "what shape this is" is a separate learned
+mapping, and that mapping is precisely what MICA's 3D-supervised training on
+registered scans supplies. Learning it instead from landmark and photometric
+losses, which are measurably near-blind to shape, does not work.
+
 **Identity scale helps, but shallowly.** Best NoW median against the
 FLAME mean face at 1.3554 mm, each at its own optimal shape scale:
 
