@@ -42,7 +42,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--archive", nargs="*", default=None,
                     help="one or more part archives; default is every "
-                         "subjects_*_72_imgs.zip present")
+                         "subjects_*_imgs.zip present. The 72-image parts give "
+                         "10k identities, the 5-image parts another 100k")
     ap.add_argument("--subjects", type=int, default=1500)
     ap.add_argument("--per-subject", type=int, default=8)
     ap.add_argument("--size", type=int, default=224)
@@ -53,7 +54,7 @@ def main():
     a = ap.parse_args()
 
     archives = ([pathlib.Path(x) for x in a.archive] if a.archive
-                else sorted(DIGI.glob("subjects_*_72_imgs.zip")))
+                else sorted(DIGI.glob("subjects_*_imgs.zip")))
     archives = [x for x in archives if x.exists()]
     if not archives:
         print(f"SKIP - no archives found in {DIGI}")
