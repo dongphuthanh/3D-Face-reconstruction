@@ -57,9 +57,23 @@ def shape_consistency_loss(shape, group_id):
     return loss / max(n, 1)
 
 
-def regularization(params, w_shape=1e-4, w_expr=1e-4, w_pose=1e-4):
+def regularization(params, w_shape=1e-4, w_expr=1e-4, w_pose=1e-4, w_light=1.0):
     """Keep coefficients near the basis mean. FLAME's bases are PCA over scans,
-    so an L2 penalty is a proper Gaussian prior, not an arbitrary shrinkage."""
-    return (w_shape * (params.shape ** 2).sum(-1).mean()
-            + w_expr * (params.expr ** 2).sum(-1).mean()
-            + w_pose * (params.pose ** 2).sum(-1).mean())
+    so an L2 penalty on shape and expression is a proper Gaussian prior.
+
+    Lighting is a different case and was missing entirely. The encoder gets 27
+    unconstrained spherical-harmonic coefficients, and unconstrained lighting
+    can explain away shading that should have come from geometry -- the
+    photometric term gets satisfied by inventing a light rather than by getting
+    the shape right. DECA regularises this at weight 1.0, the strongest in
+    their config.
+    """
+    reg = (w_shape * (params.shape ** 2).sum(-1).mean()
+           + w_expr * (params.expr ** 2).sum(-1).mean()
+           + w_pose * (params.pose ** 2).sum(-1).mean())
+    if w_light:
+        # Deviation of each SH band from its own channel mean: penalises
+        # coloured and strongly directional light without touching brightness.
+        light = params.light                       # (B, 9, 3)
+        reg = reg + w_light * ((light - light.mean(-1, keepdim=True)) ** 2).mean()
+    return reg

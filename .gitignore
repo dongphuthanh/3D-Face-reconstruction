@@ -26,6 +26,10 @@ landmark_embedding*
 # Third-party checkout; pinned by URL in the README rather than vendored.
 now_evaluation-main/
 
+# DECA reference checkout, kept for comparison. Non-commercial research licence
+# that forbids redistribution, so it is never committed.
+reference/
+
 # Demo photographs — consent is per-image and tracked separately.
 data/photos/
 

@@ -149,30 +149,39 @@ def consistency_loss(shape):
     return (a - b).pow(2).sum(-1).mean()
 
 
-def swap_shape(params):
-    """Exchange the shape halves of a paired-view batch, keeping all else.
+def swap_shape(params, k=2, blocked=False):
+    """Exchange shape between images of the same identity, everything else kept.
 
-    This is DECA's shape-consistency mechanism, adapted to augmented views
-    rather than multiple photographs of one person.
+    This is DECA's shape-consistency mechanism. Two layouts are supported:
+
+      halves   (B*2, ...) as `two_views` emits, first half paired with second.
+      blocked  (B*K, ...) as `IdentityPairs` emits, identity g occupying rows
+               g*K..g*K+K-1. Shape is permuted WITHIN each block, which is what
+               DECA does -- with K=4 a single image's shape must explain three
+               other views of that face, not just one.
 
     Why swapping rather than penalising `(shape_A - shape_B)^2`: the distance
-    penalty is a *separate* term from reconstruction, so shape can collapse to a
+    penalty is a separate term from reconstruction, so shape can collapse to a
     constant (satisfying it perfectly) while pose, expression and camera
-    compensate in the reconstruction. Both terms are then happy and identity is
-    gone -- measured, see consistency_loss above.
+    compensate in the reconstruction. DECA's own comment on this is blunt --
+    the L2 form "encourage s0, s1 is close in l2 space, but not really ensure
+    shape will be close". We measured that collapse: ratio 0.42 -> 0.29.
 
     Swapping couples the two into one render. Everything except shape stays
-    specific to its own view, so the other view's shape is the only free
-    variable available to explain this view's pixels and landmarks. A collapsed
-    shape renders the mean face and the landmark loss blows up; a shape carrying
-    pose or lighting information does not transfer to the other view. The only
-    solution is shape that is both invariant to the perturbation and informative
-    about the face.
-
-    Returns params with shape halves exchanged; the caller renders and applies
-    the ordinary reconstruction losses to the result.
+    specific to its own image, so another image's shape is the only free
+    variable left to explain this one's pixels and landmarks.
     """
-    a, b = params.shape.chunk(2, dim=0)
-    swapped = torch.cat([b, a], dim=0)
+    import torch as _t
     from dataclasses import replace
-    return replace(params, shape=swapped)
+
+    s = params.shape
+    if not blocked:
+        a, b = s.chunk(2, dim=0)
+        return replace(params, shape=_t.cat([b, a], dim=0))
+
+    n = s.shape[0]
+    assert n % k == 0, f"batch {n} is not a multiple of k={k}"
+    idx = _t.arange(n, device=s.device).view(-1, k)
+    # A derangement per block where possible, so no image keeps its own shape.
+    perm = _t.stack([row.roll(1) for row in idx]).reshape(-1)
+    return replace(params, shape=s[perm])

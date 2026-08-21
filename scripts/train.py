@@ -42,8 +42,18 @@ def main():
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
-    ap.add_argument("--w-lmk", type=float, default=5.0)
-    ap.add_argument("--w-pho", type=float, default=1.0)
+    # DECA weights landmark 1.0 against photometric 2.0. Ours was 5:1 the other
+    # way -- a 10x swing toward the term measured to be near-blind to shape
+    # (swapping shape moves landmarks 1.95 px against pose's 17.13).
+    ap.add_argument("--w-lmk", type=float, default=1.0)
+    ap.add_argument("--w-pho", type=float, default=2.0)
+    ap.add_argument("--w-light", type=float, default=1.0,
+                    help="spherical-harmonic regularisation. DECA's strongest "
+                         "weight; unconstrained light explains away shading that "
+                         "should come from geometry")
+    ap.add_argument("-k", "--images-per-identity", type=int, default=2,
+                    help="images per identity per batch. DECA uses 4: one "
+                         "image's shape must then explain three other views")
     ap.add_argument("--w-con", type=float, default=0.0,
                     help="shape-consistency across two augmented views; "
                          "0 reproduces the original baseline")
@@ -107,8 +117,9 @@ def main():
 
     if a.identity_data:
         root = pathlib.Path(a.identity_data)
-        tr = IdentityPairs(root, a.size, "train", embeddings=a.arcface)
-        va = IdentityPairs(root, a.size, "val", embeddings=a.arcface)
+        K = a.images_per_identity
+        tr = IdentityPairs(root, a.size, "train", embeddings=a.arcface, k=K)
+        va = IdentityPairs(root, a.size, "val", embeddings=a.arcface, k=K)
     else:
         tr = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train")
         va = FFHQCrops(ROOT / "data" / "ffhq", a.size, "val")
@@ -157,8 +168,8 @@ def main():
     def step(batch, augment=True, as_pairs=None):
         prepaired = bool(a.identity_data) if as_pairs is None else as_pairs
         if prepaired:
-            # (B,2,...) -> (2B,...), halves aligned by subject.
-            batch = flatten_pairs(batch)
+            # (B,K,...) -> (B*K,...), each identity contiguous.
+            batch = flatten_pairs(batch, k=a.images_per_identity)
         img = batch["image"].to(DEV, non_blocking=True)
         gt = batch["landmarks"].to(DEV, non_blocking=True)
         paired = prepaired or ((a.w_con > 0 or a.w_swap > 0 or a.pair) and augment)
@@ -179,7 +190,8 @@ def main():
         # memory (roughly half of a full step), so only the views in `n_render`
         # are rendered. With paired views that halves the render cost while
         # keeping the augmented view's landmark supervision.
-        n_render = img.shape[0] // 2 if (paired and a.render_first_only) else img.shape[0]
+        n_render = (img.shape[0] // 2 if (paired and a.render_first_only)
+                    else img.shape[0])
         render, mask = renderer.render(verts[:n_render], pred[:n_render])
         target = img[:n_render].permute(0, 2, 3, 1)
 
@@ -192,14 +204,15 @@ def main():
         # thing available to explain this view's landmarks and pixels.
         l_swap = render.new_zeros(())
         if paired and a.w_swap > 0:
-            sw = swap_shape(pred)
+            sw = swap_shape(pred, k=a.images_per_identity,
+                            blocked=bool(a.identity_data))
             v_sw, _ = renderer.geometry(sw)
             l_swap = landmark_loss(renderer.landmarks(v_sw, sw.cam), gt)
             if a.swap_photometric:
                 r_sw, m_sw = renderer.render(v_sw[:n_render], sw[:n_render])
                 l_swap = l_swap + photometric_loss(r_sw, target, m_sw & valid[:n_render])
         l_pho = photometric_loss(render, target, mask & valid[:n_render])
-        l_reg = regularization(pred)
+        l_reg = regularization(pred, w_light=a.w_light)
         l_con = consistency_loss(pred.shape) if (paired and a.w_con > 0) else render.new_zeros(())
         loss = (a.w_lmk * l_lmk + a.w_pho * l_pho + l_reg
                 + a.w_con * l_con + a.w_swap * l_swap)

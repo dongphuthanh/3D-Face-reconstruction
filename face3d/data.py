@@ -74,7 +74,7 @@ class IdentityPairs(Dataset):
     """
 
     def __init__(self, root, size=224, split="train", val_frac=0.05, seed=0,
-                 min_images=2, embeddings=False):
+                 min_images=2, embeddings=False, k=2):
         root = pathlib.Path(root)
         cache = root / f"landmarks_{size}.npz"
         if not cache.exists():
@@ -113,6 +113,10 @@ class IdentityPairs(Dataset):
         chosen = order[n_val:] if split == "train" else order[:n_val]
 
         self.groups = [np.array(groups[ids[i]]) for i in chosen]
+        # K images per identity, not 2. DECA uses K=4: more views of one face
+        # constrain the shared shape harder, and the swap permutes within the
+        # group rather than exchanging a single pair.
+        self.k = max(2, k)
         self.dir = root / "crops"
         self.cache = cache
         self.rng = np.random.default_rng(seed + 1)
@@ -175,26 +179,33 @@ class IdentityPairs(Dataset):
                 torch.from_numpy(lmk[i]),
                 torch.from_numpy((arr.sum(-1) > 0).astype(np.float32)))
 
-    def __getitem__(self, k):
-        g = self.groups[k]
-        a, b = self.rng.choice(len(g), size=2, replace=False)
-        ia, ib = self._load(g[a]), self._load(g[b])
-        out = {"image": torch.stack([ia[0], ib[0]]),
-               "landmarks": torch.stack([ia[1], ib[1]]),
-               "valid": torch.stack([ia[2], ib[2]])}
+    def __getitem__(self, idx):
+        g = self.groups[idx]
+        n = min(self.k, len(g))
+        pick = self.rng.choice(len(g), size=n, replace=n > len(g))
+        if n < self.k:            # pad by resampling, so batches stay rectangular
+            pick = np.concatenate([pick, self.rng.choice(len(g), size=self.k - n)])
+        loaded = [self._load(g[j]) for j in pick]
+        out = {"image": torch.stack([x[0] for x in loaded]),
+               "landmarks": torch.stack([x[1] for x in loaded]),
+               "valid": torch.stack([x[2] for x in loaded])}
         if self.emb_cache is not None:
             e = self._embeddings()
-            out["embedding"] = torch.stack([torch.from_numpy(e[g[a]]),
-                                            torch.from_numpy(e[g[b]])])
+            out["embedding"] = torch.stack(
+                [torch.from_numpy(e[g[j]]) for j in pick])
         return out
 
 
-def flatten_pairs(batch):
-    """(B,2,...) -> (2B,...) with view A stacked above view B, halves aligned."""
+def flatten_pairs(batch, k=2):
+    """(B,K,...) -> (B*K,...), grouped so identity g occupies rows g*K..g*K+K-1.
+
+    Contiguous-by-identity rather than interleaved, because the swap permutes
+    within each identity's block -- see augment.swap_shape.
+    """
     out = {}
-    for k, v in batch.items():
-        if torch.is_tensor(v) and v.dim() >= 2 and v.shape[1] == 2:
-            out[k] = torch.cat([v[:, 0], v[:, 1]], dim=0)
+    for key, v in batch.items():
+        if torch.is_tensor(v) and v.dim() >= 2 and v.shape[1] == k:
+            out[key] = v.reshape(v.shape[0] * k, *v.shape[2:])
         else:
-            out[k] = v
+            out[key] = v
     return out
