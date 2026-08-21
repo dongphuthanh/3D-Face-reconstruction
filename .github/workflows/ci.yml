@@ -25,6 +25,15 @@ jobs:
       - name: Syntax check
         run: python -m compileall -q face3d scripts
 
+      # The glTF export test runs the official Khronos validator through node.
+      # Without it the suite still passes but skips the check that actually
+      # decides whether an engine will load the asset.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install glTF validator
+        run: npm install --no-save gltf-validator
+
       # No FLAME model can exist here — every variant is non-redistributable.
       # The synthetic fixture shares FLAME's pickle structure but contains no
       # MPI data, so LBS, blendshapes, rasterisation, gradients and the encoder

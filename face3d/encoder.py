@@ -7,6 +7,7 @@ the licence strategy executable — replacing a DECA-derived encoder with one we
 trained ourselves is, structurally, the same swap.
 """
 
+from dataclasses import replace
 from typing import Protocol, runtime_checkable
 
 import torch
@@ -14,6 +15,19 @@ import torch.nn as nn
 import torchvision
 
 from .params import FlameParams
+
+# The encoder is over-confident about identity: its shape direction correlates
+# with the true face but its magnitude is roughly 4x too large. Measured by
+# sweeping a scale factor over the predicted shape and scoring each on NoW:
+#
+#     scale   0.00    0.25    0.50    0.75    1.00    1.25
+#     median 1.3554  1.3300  1.3485  1.4214  1.5296  1.6648 mm
+#
+# 0.00 is the FLAME mean face. The optimum at 0.25 is the only configuration in
+# this project that beats predicting nothing, so it is applied by default.
+# Re-measure with scripts/now_predict.py --shape-scale after any training change;
+# a better-calibrated encoder should push this toward 1.0.
+SHAPE_CALIBRATION = 0.25
 
 
 @runtime_checkable
@@ -80,8 +94,13 @@ class ResNetEncoder(nn.Module, Encoder):
         code = self.head(self.trunk((image - m) / s))
         return self._split(code)
 
-    def predict(self, image: torch.Tensor) -> FlameParams:
-        return self(image)
+    def predict(self, image: torch.Tensor, calibrate: bool = False) -> FlameParams:
+        """calibrate=True applies SHAPE_CALIBRATION. Off during training, since
+        the loss should see the raw prediction; on for inference and export."""
+        p = self(image)
+        if calibrate:
+            p = replace(p, shape=p.shape * SHAPE_CALIBRATION)
+        return p
 
     def _split(self, code: torch.Tensor) -> FlameParams:
         B = code.shape[0]

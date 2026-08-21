@@ -13,6 +13,7 @@ SUITES = [
     ("albedo / texture space", "test_albedo.py", []),
     ("mediapipe detector", "test_detect.py", []),
     ("paired-view augmentation", "test_augment.py", []),
+    ("gltf export + validator", "test_export.py", []),
     ("chain inverts", "test_fit_synthetic.py", []),
     ("overfits a batch", "train_overfit.py", ["300", "3e-4"]),   # short run for CI
 ]
