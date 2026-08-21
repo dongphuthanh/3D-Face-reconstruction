@@ -45,6 +45,9 @@ def main():
     ap.add_argument("--per-subject", type=int, default=8)
     ap.add_argument("--size", type=int, default=224)
     ap.add_argument("--out", default=str(DIGI / "crops"))
+    ap.add_argument("--verify", action="store_true",
+                    help="CRC-check every archive member first (slow on 2.7 GB, "
+                         "but catches a truncated download before ingesting)")
     a = ap.parse_args()
 
     arc = pathlib.Path(a.archive)
@@ -58,7 +61,22 @@ def main():
                   "mediapipe_landmark_embedding.npz")
     need = emb["landmark_indices"].astype(int).ravel()
 
-    z = zipfile.ZipFile(arc)
+    # The download is 2.7 GB over a plain HTTP connection and dropped once
+    # mid-stream. A truncated zip still opens and still lists entries; it fails
+    # only when a member near the end is read, which would be twenty minutes
+    # into the ingest. Check the central directory up front instead.
+    try:
+        z = zipfile.ZipFile(arc)
+        bad = z.testzip() if a.verify else None
+        if bad is not None:
+            print(f"SKIP - archive is corrupt at {bad}. Re-run the download with "
+                  f"`curl -C -` to resume.")
+            sys.exit(0)
+    except zipfile.BadZipFile as e:
+        print(f"SKIP - {arc.name} is not a readable zip ({e}). The download "
+              f"likely truncated; resume it with `curl -C -`.")
+        sys.exit(0)
+
     by_subject = collections.defaultdict(list)
     for n in z.namelist():
         if n.lower().endswith(".png"):
