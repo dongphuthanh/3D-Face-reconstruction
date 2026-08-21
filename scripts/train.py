@@ -59,6 +59,14 @@ def main():
                          "Feeds the swap loss REAL pairs -- two different images "
                          "of one subject -- instead of two augmentations of one "
                          "image, which only ever taught augmentation invariance")
+    ap.add_argument("--mix-ffhq", type=float, default=0.0,
+                    help="weight for an extra FFHQ batch each step. Identity "
+                         "pairs supply the swap constraint but are synthetic and "
+                         "112px upscaled; real photographs keep the "
+                         "reconstruction terms anchored on the distribution the "
+                         "model is actually asked about")
+    ap.add_argument("--mix-batch", type=int, default=0,
+                    help="FFHQ batch size for the mix; defaults to --batch")
     ap.add_argument("--pair", action="store_true",
                     help="build paired views even when --w-con is 0, so the swap "
                          "loss can be used on its own")
@@ -103,6 +111,13 @@ def main():
                     drop_last=True, persistent_workers=True)
     vl = DataLoader(va, batch_size=a.batch, num_workers=2)
 
+    mix_dl = None
+    if a.mix_ffhq > 0:
+        mix_ds = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train")
+        mix_dl = DataLoader(mix_ds, batch_size=a.mix_batch or a.batch, shuffle=True,
+                            num_workers=2, drop_last=True, persistent_workers=True)
+        print(f"    mixing {len(mix_ds)} FFHQ photographs at weight {a.mix_ffhq}")
+
     enc = ResNetEncoder(n_shape=100, n_expr=50, pretrained=True).to(DEV)
     if a.freeze_backbone:
         for p in enc.trunk.parameters():
@@ -130,8 +145,8 @@ def main():
           f"trainable {sum(p.numel() for p in params) / 1e6:.1f} M")
     print("")
 
-    def step(batch, augment=True):
-        prepaired = bool(a.identity_data)
+    def step(batch, augment=True, as_pairs=None):
+        prepaired = bool(a.identity_data) if as_pairs is None else as_pairs
         if prepaired:
             # (B,2,...) -> (2B,...), halves aligned by subject.
             batch = flatten_pairs(batch)
@@ -180,6 +195,7 @@ def main():
 
     hist = []
     done = 0
+    mix_iter = iter(mix_dl) if mix_dl is not None else None
     for ep in range(a.epochs):
         enc.train()
         t0 = time.time()
@@ -188,6 +204,16 @@ def main():
         for batch in dl:
             opt.zero_grad()
             loss, terms, *_ = step(batch)
+            if mix_dl is not None:
+                # Reconstruction only: no swap, no pairing. This batch exists to
+                # keep the encoder honest about real photographs.
+                try:
+                    mb = next(mix_iter)
+                except (StopIteration, NameError):
+                    mix_iter = iter(mix_dl)
+                    mb = next(mix_iter)
+                mloss, _, *_ = step(mb, augment=False, as_pairs=False)
+                loss = loss + a.mix_ffhq * mloss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 5.0)
             opt.step()

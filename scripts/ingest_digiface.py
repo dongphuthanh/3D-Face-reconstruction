@@ -40,7 +40,9 @@ DIGI = ROOT / "data" / "digiface"
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--archive", default=str(DIGI / "subjects_0-1999_72_imgs.zip"))
+    ap.add_argument("--archive", nargs="*", default=None,
+                    help="one or more part archives; default is every "
+                         "subjects_*_72_imgs.zip present")
     ap.add_argument("--subjects", type=int, default=1500)
     ap.add_argument("--per-subject", type=int, default=8)
     ap.add_argument("--size", type=int, default=224)
@@ -50,9 +52,11 @@ def main():
                          "but catches a truncated download before ingesting)")
     a = ap.parse_args()
 
-    arc = pathlib.Path(a.archive)
-    if not arc.exists():
-        print(f"SKIP - archive not found: {arc}")
+    archives = ([pathlib.Path(x) for x in a.archive] if a.archive
+                else sorted(DIGI.glob("subjects_*_72_imgs.zip")))
+    archives = [x for x in archives if x.exists()]
+    if not archives:
+        print(f"SKIP - no archives found in {DIGI}")
         sys.exit(0)
 
     out = pathlib.Path(a.out)
@@ -61,28 +65,40 @@ def main():
                   "mediapipe_landmark_embedding.npz")
     need = emb["landmark_indices"].astype(int).ravel()
 
-    # The download is 2.7 GB over a plain HTTP connection and dropped once
-    # mid-stream. A truncated zip still opens and still lists entries; it fails
-    # only when a member near the end is read, which would be twenty minutes
-    # into the ingest. Check the central directory up front instead.
-    try:
-        z = zipfile.ZipFile(arc)
-        bad = z.testzip() if a.verify else None
-        if bad is not None:
-            print(f"SKIP - archive is corrupt at {bad}. Re-run the download with "
-                  f"`curl -C -` to resume.")
+    # Each part is ~2.7 GB over plain HTTP and one dropped mid-stream already.
+    # A truncated zip still opens and still lists entries; it fails only when a
+    # member near the end is read, which would be an hour into the ingest.
+    # Check each central directory up front instead.
+    zips, by_subject = {}, collections.defaultdict(list)
+    for arc in archives:
+        try:
+            z = zipfile.ZipFile(arc)
+            if a.verify and z.testzip() is not None:
+                print(f"SKIP - {arc.name} is corrupt; resume with `curl -C -`")
+                sys.exit(0)
+        except zipfile.BadZipFile as e:
+            print(f"SKIP - {arc.name} is not a readable zip ({e}); the download "
+                  f"likely truncated. Resume with `curl -C -`.")
             sys.exit(0)
-    except zipfile.BadZipFile as e:
-        print(f"SKIP - {arc.name} is not a readable zip ({e}). The download "
-              f"likely truncated; resume it with `curl -C -`.")
-        sys.exit(0)
+        zips[arc.name] = z
+        for n in z.namelist():
+            if n.lower().endswith(".png"):
+                # Subject ids repeat across parts, so qualify with the part name.
+                by_subject[(arc.name, n.split("/")[0])].append(n)
 
-    by_subject = collections.defaultdict(list)
-    for n in z.namelist():
-        if n.lower().endswith(".png"):
-            by_subject[n.split("/")[0]].append(n)
     subjects = sorted(by_subject)[: a.subjects]
-    print(f"=== DigiFace ingest: {len(subjects)} subjects x {a.per_subject} images ===")
+    print(f"=== DigiFace ingest: {len(subjects)} subjects x {a.per_subject} images "
+          f"from {len(archives)} archive(s) ===")
+
+    # Reuse any previous ingest so parts can be added incrementally rather than
+    # each run silently replacing the last one's landmarks.
+    cache = out.parent / f"landmarks_{a.size}.npz"
+    have = {}
+    if cache.exists():
+        zc = np.load(cache)
+        have = {str(k): (v, str(s)) for k, v, s in
+                zip(zc["keys"], zc["landmarks"], zc["subject"])}
+        print(f"    reusing {len(have)} cached records")
 
     det = FaceDetector(blendshapes=False)
     keys, lmks, sids = [], [], []
@@ -90,6 +106,9 @@ def main():
     t0 = time.time()
 
     for si, s in enumerate(subjects, 1):
+        arc_name, subj_id = s
+        z = zips[arc_name]
+        part = arc_name.split("_")[1]
         # Sort by the numeric stem so the chosen images are a stable subset
         # rather than whatever order the archive happens to list.
         names = sorted(by_subject[s], key=lambda n: int(pathlib.Path(n).stem))
@@ -97,6 +116,12 @@ def main():
         for n in names:
             if taken >= a.per_subject:
                 break
+            key = f"{part}_{subj_id}_{pathlib.Path(n).stem}"
+            if key in have:
+                lm, sid = have[key]
+                keys.append(key); lmks.append(lm); sids.append(sid)
+                taken += 1; ok += 1
+                continue
             with z.open(n) as fh:
                 im = np.array(Image.open(fh).convert("RGB"), dtype=np.uint8)
             res = det.detect(im)
@@ -105,11 +130,10 @@ def main():
                 continue
             pts = select_embedding_points(res["norm"], need)
             crop, to_ndc = crop_square(im, res["norm"], size=a.size)
-            key = f"{s}_{pathlib.Path(n).stem}"
             Image.fromarray(crop).save(out / f"{key}.jpg", quality=95)
             keys.append(key)
             lmks.append(to_ndc(pts).astype(np.float32))
-            sids.append(s)
+            sids.append(f"{part}_{subj_id}")
             taken += 1
             ok += 1
         if si % 100 == 0 or si == len(subjects):
@@ -120,7 +144,7 @@ def main():
     if keys:
         # subject_id travels with the landmarks: it is the whole point of this
         # dataset and the swap loss cannot be formed without it.
-        np.savez_compressed(out.parent / f"landmarks_{a.size}.npz",
+        np.savez_compressed(cache,
                             keys=np.array(keys), landmarks=np.stack(lmks),
                             subject=np.array(sids))
         print(f"\n  wrote landmarks_{a.size}.npz  ({len(keys)} images, "
