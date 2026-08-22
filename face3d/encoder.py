@@ -16,23 +16,21 @@ import torchvision
 
 from .params import FlameParams
 
-# The encoder is over-confident about identity: its shape direction correlates
-# with the true face but its magnitude overshoots. Measured by sweeping a scale
-# factor over the predicted shape and scoring each on NoW (0.00 is the FLAME
-# mean face, the Bayes-optimal guess under no information):
+# The encoder overshoots on identity: its shape direction correlates with the
+# true face but its magnitude is too large. Measured by sweeping a scale over
+# the predicted shape and scoring each on NoW (0.00 is the FLAME mean face, the
+# Bayes-optimal guess given no information):
 #
-#   model      0.00    0.25    0.50    0.75    1.00
-#   id_swap   1.3554  1.3300  1.3485  1.4214  1.5296   (2k identities)
-#   digi_all  1.3554  1.3294  1.3241  1.3602  1.4242   (10k identities)
+#   model       0.00    0.25    0.40    0.50    0.60    0.80    1.00
+#   id_swap    1.3554  1.3300     -    1.3485     -       -    1.5296  (2k ids)
+#   digi_all   1.3554  1.3294     -    1.3241     -       -    1.4242  (10k)
+#   digi_full  1.3554  1.3224     -    1.3109     -       -    1.3978  (110k)
+#   deca_conf  1.3554     -    1.2978     -    1.2923  1.3079 1.3499  (+DECA weights)
 #
-# The optimum moved 0.25 -> 0.50 as identity data scaled 5x, i.e. twice as much
-# of the prediction became usable: better calibration, not just a better score.
-# Extrapolating, an optimum at 1.0 would mean no post-hoc scaling is needed.
-#
-# Re-measure with scripts/now_predict.py --shape-scale after any training
-# change; this constant is an empirical patch over a calibration gap, not a
-# property of the architecture.
-SHAPE_CALIBRATION = 0.50
+# The optimum has crept 0.25 -> 0.50 -> 0.60 as data and loss weighting
+# improved; an optimum at 1.0 would mean no post-hoc scaling is needed at all.
+# Re-measure with scripts/now_predict.py --shape-scale after any training change.
+SHAPE_CALIBRATION = 0.60
 
 
 @runtime_checkable

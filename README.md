@@ -57,6 +57,23 @@ visually convincing and geometrically wrong by 19 mm. **Visual plausibility is
 not evidence of accuracy** — which is why the NoW benchmark, not eyeballing,
 decides whether this works.
 
+**Reading the reference implementation was worth more than any experiment.**
+Cloning DECA revealed our landmark:photometric weighting was 5:1 where theirs is
+1:2 -- a 10x swing toward the term our own measurement showed is near-blind to
+shape -- and that light regularisation, their strongest weight, was missing
+entirely. Adopting their configuration (plus K=4 images per identity):
+
+| | identity ratio | best NoW |
+|---|---|---|
+| 110k identities, our weights | 0.76 | 1.3109 mm |
+| **110k identities, DECA weights** | **0.96** | **1.2923 mm** |
+
+The ratio jump (0.76 -> 0.96) is the largest of the project -- larger than 55x
+more data (0.68 -> 0.76) or swapping in an ArcFace shape head (0.76 -> 0.85).
+It cost nothing but reading their config. Still missing from their setup: the
+identity loss (0.2, face recognition on the render), eye-closure and
+lip-distance terms, real segmentation masks, and randomised crop scale.
+
 **A better identity signal is not the same as a better 3D shape.** MICA
 replaces the pixel-derived shape head with an ArcFace identity embedding and
 beats DECA while training on ~2,300 subjects. Probed on NoW first, the premise
