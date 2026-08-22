@@ -104,6 +104,30 @@ def photometric_jitter(img, brightness=0.25, contrast=0.25, gamma=(0.8, 1.25),
     return x.clamp(0, 1)
 
 
+def scale_jitter(img, lmk, lo, hi):
+    """DECA's crop-scale augmentation, applied as a zoom on an already-made crop.
+
+    They re-crop the source photograph at a bounding-box multiplier drawn from
+    [1.4, 1.8]. Our crops are baked at ingest with a fixed margin of 1.6, so the
+    equivalent is a zoom of 1.6/hi to 1.6/lo about the crop centre -- for their
+    range, roughly 0.89 to 1.14.
+
+    Scale only. DECA sets trans_scale to 0 and never rotates, and in-plane
+    rotation is what put black corners into the training distribution here
+    before and shifted BatchNorm's running statistics off the eval distribution.
+    There is no reason to reintroduce it for an effect they did not use.
+
+    Every image is jittered independently, including the K views of one
+    identity, so the shape swap has to survive a framing change as well as a
+    pose change.
+    """
+    n = img.shape[0]
+    z = torch.zeros(n, device=img.device)
+    p = {"theta": z, "tx": z, "ty": z,
+         "scale": torch.empty(n, device=img.device).uniform_(lo, hi)}
+    return affine_view(img, lmk, p)
+
+
 def two_views(img, lmk, weak_strong=True):
     """Return (2B,3,H,W) and (2B,L,2): view A stacked above view B.
 

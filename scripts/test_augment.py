@@ -19,7 +19,7 @@ from PIL import Image
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d.augment import (affine_view, consistency_loss, photometric_jitter,
-                            sample_params, two_views)
+                            sample_params, scale_jitter, two_views)
 from face3d.detect import MODEL, FaceDetector, select_embedding_points
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -159,6 +159,48 @@ check("mean brightness is preserved within jitter range",
 check("view A stays geometrically clean (anchors BatchNorm)",
       float((vl[:N] - lm).abs().max()) < 1e-5,
       "weak view leaves landmarks untouched")
+
+# --- crop-scale jitter -------------------------------------------------------
+# The only augmentation the identity-data path gets. It must move the landmarks
+# with the pixels: applied to pixels alone it trains the encoder against
+# silently wrong 2D targets, which reads as an accuracy problem rather than a
+# bug. Checked against the detector and against the exact algebra.
+print("")
+print("=== crop-scale jitter ===")
+S = 1.12
+sj_img, sj_lm = scale_jitter(imgs, lm, S, S)
+dev = float((sj_lm - lm * S).abs().max())
+check("landmarks scale by exactly the zoom factor", dev < 1e-5, f"max deviation {dev:.2e}")
+
+det2 = FaceDetector(blendshapes=False)
+errs_sj, errs_raw = [], []
+for i in range(N):
+    arr = (sj_img[i].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    res = det2.detect(arr)
+    if res is None:
+        continue
+    pts = select_embedding_points(res["norm"], need)
+    ndc = np.stack([pts[:, 0] * 2 - 1, 1 - pts[:, 1] * 2], -1)
+    errs_sj.append(float(np.abs(ndc - sj_lm[i].numpy()).mean()))
+    errs_raw.append(float(np.abs(ndc - lm[i].numpy()).mean()))
+det2.close()
+err = float(np.mean(errs_sj)) if errs_sj else 9.9
+base = float(np.mean(errs_raw)) if errs_raw else 0.0
+check("zoomed image agrees with the transformed landmarks", err < base * 0.5,
+      f"detector error {err:.4f}, against {base:.4f} for untransformed targets")
+
+blk = float((sj_img.sum(1) == 0).float().mean())
+check("zoom-out adds no black border (padding_mode=border)",
+      blk - black_before < 0.02, f"exact-zero pixels {blk * 100:.1f}%")
+
+# Per-image draws, or every view of one identity shares a framing and the
+# augmentation teaches nothing about framing at all.
+a_img, _ = scale_jitter(imgs, lm, 0.89, 1.14)
+b_img, _ = scale_jitter(imgs, lm, 0.89, 1.14)
+spread = float((a_img - b_img).abs().mean())
+check("each image draws its own scale", spread > 1e-3,
+      f"mean difference between two draws {spread:.4f}")
+
 
 panel = torch.cat([torch.cat(list(imgs[:4].permute(0, 2, 3, 1)), 1),
                    torch.cat(list(vi[:4].permute(0, 2, 3, 1)), 1),

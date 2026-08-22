@@ -29,7 +29,8 @@ from face3d.encoder import ArcFaceShapeEncoder, ResNetEncoder
 from face3d.facemask import face_faces, face_region
 from face3d.flame_torch import FlameTorch
 from face3d.landmarks import LandmarkEmbedding
-from face3d.augment import consistency_loss, swap_shape, two_views
+from face3d.augment import (consistency_loss, scale_jitter, swap_shape,
+                            two_views)
 from face3d.losses import (EYE_PAIRS, LIP_PAIRS, IdentityLoss, closure_loss,
                            landmark_loss, make_overlay, photometric_loss,
                            regularization)
@@ -55,6 +56,14 @@ def main():
                          "composited into the photo, and the photo itself. "
                          "Albedo and light are detached so it supervises shape "
                          "alone -- the only term that does")
+    ap.add_argument("--crop-jitter", type=float, nargs=2, default=None,
+                    metavar=("MIN", "MAX"),
+                    help="DECA's randomised crop scale, as their bounding-box "
+                         "multiplier range (they use 1.4 1.8). Converted here to "
+                         "a zoom on our fixed 1.6-margin crops. Without it every "
+                         "training image is framed identically while NoW crops "
+                         "from varying bounding boxes -- the same train/test "
+                         "mismatch as the Arc2Face margin bug")
     ap.add_argument("--w-eye", type=float, default=0.0,
                     help="DECA's eye-closure term (they use 1.0): match the "
                          "eyelid gap directly. The plain landmark loss averages "
@@ -182,7 +191,15 @@ def main():
           f"trainable {sum(p.numel() for p in params) / 1e6:.1f} M")
     print("")
 
-    def step(batch, augment=True, as_pairs=None):
+    # Our ingest margin. DECA's [1.4, 1.8] becomes a zoom of 1.6/1.8 to 1.6/1.4.
+    INGEST_MARGIN = 1.6
+    jit = ((INGEST_MARGIN / a.crop_jitter[1], INGEST_MARGIN / a.crop_jitter[0])
+           if a.crop_jitter else None)
+    if jit:
+        print(f"    crop jitter  scale {jit[0]:.3f}-{jit[1]:.3f}  "
+              f"(DECA margin {a.crop_jitter[0]}-{a.crop_jitter[1]})")
+
+    def step(batch, augment=True, as_pairs=None, jitter=None):
         prepaired = bool(a.identity_data) if as_pairs is None else as_pairs
         if prepaired:
             # (B,K,...) -> (B*K,...), each identity contiguous.
@@ -192,6 +209,13 @@ def main():
         paired = prepaired or ((a.w_con > 0 or a.w_swap > 0 or a.pair) and augment)
         if paired and not prepaired:
             img, gt = two_views(img, gt)
+        elif jit and (augment if jitter is None else jitter):
+            # two_views already randomises scale on its strong view; this covers
+            # the paths it never reaches -- pre-paired identity batches, which
+            # is every DigiFace step, and the FFHQ mix. Both come from a cache
+            # baked at one fixed margin, so without this the encoder never sees
+            # a framing it was not trained on until inference.
+            img, gt = scale_jitter(img, gt, *jit)
         # Validity is recomputed from pixels rather than taken from the cache:
         # a rotated or scaled view has its own black borders, so the ingest-time
         # mask no longer describes this image.
@@ -280,7 +304,7 @@ def main():
                 except (StopIteration, NameError):
                     mix_iter = iter(mix_dl)
                     mb = next(mix_iter)
-                mloss, _, *_ = step(mb, augment=False, as_pairs=False)
+                mloss, _, *_ = step(mb, augment=False, as_pairs=False, jitter=True)
                 loss = loss + a.mix_ffhq * mloss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(params, 5.0)
