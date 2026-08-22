@@ -30,7 +30,8 @@ from face3d.facemask import face_faces, face_region
 from face3d.flame_torch import FlameTorch
 from face3d.landmarks import LandmarkEmbedding
 from face3d.augment import consistency_loss, swap_shape, two_views
-from face3d.losses import landmark_loss, photometric_loss, regularization
+from face3d.losses import (IdentityLoss, landmark_loss, make_overlay,
+                           photometric_loss, regularization)
 from face3d.pipeline import FaceRenderer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -47,6 +48,12 @@ def main():
     # (swapping shape moves landmarks 1.95 px against pose's 17.13).
     ap.add_argument("--w-lmk", type=float, default=1.0)
     ap.add_argument("--w-pho", type=float, default=2.0)
+    ap.add_argument("--w-id", type=float, default=0.0,
+                    help="DECA's identity loss (they use 0.2): cosine distance "
+                         "between face-recognition features of the render "
+                         "composited into the photo, and the photo itself. "
+                         "Albedo and light are detached so it supervises shape "
+                         "alone -- the only term that does")
     ap.add_argument("--w-light", type=float, default=1.0,
                     help="spherical-harmonic regularisation. DECA's strongest "
                          "weight; unconstrained light explains away shading that "
@@ -134,6 +141,7 @@ def main():
                             num_workers=2, drop_last=True, persistent_workers=True)
         print(f"    mixing {len(mix_ds)} FFHQ photographs at weight {a.mix_ffhq}")
 
+    id_loss = IdentityLoss(DEV) if a.w_id > 0 else None
     Enc = ArcFaceShapeEncoder if a.arcface else ResNetEncoder
     enc = Enc(n_shape=100, n_expr=50, pretrained=True).to(DEV)
     if a.freeze_backbone:
@@ -213,10 +221,21 @@ def main():
                 l_swap = l_swap + photometric_loss(r_sw, target, m_sw & valid[:n_render])
         l_pho = photometric_loss(render, target, mask & valid[:n_render])
         l_reg = regularization(pred, w_light=a.w_light)
+
+        # Identity: composite the render into the photograph over the face
+        # region and require a recognition network to see the same person.
+        # pred.albedo/light are not detached here because the render already
+        # carries them; what matters is that the comparison target is the real
+        # photo, so the only way to reduce this is better geometry.
+        l_id = render.new_zeros(())
+        if id_loss is not None:
+            overlay = make_overlay(render, target, mask)
+            l_id = id_loss(overlay, target)
         l_con = consistency_loss(pred.shape) if (paired and a.w_con > 0) else render.new_zeros(())
         loss = (a.w_lmk * l_lmk + a.w_pho * l_pho + l_reg
-                + a.w_con * l_con + a.w_swap * l_swap)
-        return loss, (l_lmk, l_pho, l_reg, l_con, l_swap), render, mask, img[:n_render]
+                + a.w_con * l_con + a.w_swap * l_swap + a.w_id * l_id)
+        return (loss, (l_lmk, l_pho, l_reg, l_con, l_swap, l_id),
+                render, mask, img[:n_render])
 
     hist = []
     done = 0
@@ -224,7 +243,7 @@ def main():
     for ep in range(a.epochs):
         enc.train()
         t0 = time.time()
-        agg = np.zeros(6)
+        agg = np.zeros(7)
         n = 0
         for batch in dl:
             opt.zero_grad()
@@ -252,7 +271,7 @@ def main():
         agg /= max(n, 1)
 
         enc.eval()
-        vagg = np.zeros(6)
+        vagg = np.zeros(7)
         m = 0
         with torch.no_grad():
             for batch in vl:
@@ -267,6 +286,7 @@ def main():
         hist.append({"epoch": ep, "train": agg.tolist(), "val": vagg.tolist()})
         con = f" con {agg[4]:.4f}" if a.w_con > 0 else ""
         con += f" swap {agg[5]:.4f}" if a.w_swap > 0 else ""
+        con += f" id {agg[6]:.4f}" if a.w_id > 0 else ""
         print(f"  ep {ep:2d}  train {agg[0]:.4f} (lmk {agg[1]:.4f} pho {agg[2]:.4f}{con})   "
               f"val {vagg[0]:.4f} (lmk {vagg[1]:.4f} pho {vagg[2]:.4f})   "
               f"{time.time() - t0:.0f}s", flush=True)

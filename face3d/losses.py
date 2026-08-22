@@ -29,15 +29,57 @@ def photometric_loss(rendered, target, mask):
     return ((rendered - target).abs() * m).sum() / (m.sum() * 3 + 1e-8)
 
 
-def identity_loss(embed_fn, rendered, target):
-    """Cosine distance between face-recognition embeddings of render and photo.
+class IdentityLoss(torch.nn.Module):
+    """Cosine distance between face-recognition features of render and photo.
 
-    embed_fn is an ArcFace-style network, frozen and training-time only — it is
-    never shipped, so its licence does not propagate to the exported weights.
+    DECA's `id` term, weight 0.2. It is the only loss that supervises geometry
+    with a signal explicitly about *who* the person is -- the channel every
+    other term is bad at. Swapping shape moves the landmarks 1.95 px against
+    pose's 17.13, and the photometric term mostly sees shading.
+
+    Two details from their implementation are easy to miss and both matter.
+
+    Overlay, not bare render. The rendered face is composited INTO the
+    photograph over the face region. A recognition network fed a bare render --
+    grey background, no hair, no neck -- produces features dominated by those
+    absences rather than by facial geometry. Compositing means the only
+    difference between the two inputs is the face itself.
+
+    Albedo and light detached by the caller. Gradient then reaches shape alone
+    (`id_shape_only` in their config), so the term cannot be satisfied by
+    repainting the texture instead of fixing the geometry.
+
+    The network is frozen and training-time only; it is never shipped, so its
+    licence does not propagate to the exported encoder.
     """
-    a = F.normalize(embed_fn(rendered), dim=-1)
-    b = F.normalize(embed_fn(target), dim=-1)
-    return (1 - (a * b).sum(-1)).mean()
+
+    def __init__(self, device="cuda"):
+        super().__init__()
+        from facenet_pytorch import InceptionResnetV1
+        self.net = InceptionResnetV1(pretrained="vggface2").eval().to(device)
+        for q in self.net.parameters():
+            q.requires_grad = False
+
+    def features(self, img_bhwc):
+        # (B,H,W,3) in [0,1] -> (B,3,160,160) in [-1,1], facenet's expected range
+        x = img_bhwc.permute(0, 3, 1, 2)
+        x = F.interpolate(x, size=(160, 160), mode="bilinear", align_corners=False)
+        return self.net(x * 2.0 - 1.0)
+
+    def forward(self, overlay, target):
+        a = self.features(overlay)
+        b = self.features(target)
+        return (1.0 - F.cosine_similarity(a, b, dim=1)).mean()
+
+
+def make_overlay(render, target, mask):
+    """Composite the render into the photograph over the face region.
+
+    render/target (B,H,W,3), mask (B,H,W). Gradient flows through `render`
+    only; the photograph is a constant.
+    """
+    m = mask.unsqueeze(-1).to(render.dtype)
+    return render * m + target.detach() * (1 - m)
 
 
 def shape_consistency_loss(shape, group_id):
