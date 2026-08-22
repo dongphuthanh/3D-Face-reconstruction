@@ -21,16 +21,34 @@ from .params import FlameParams
 # the predicted shape and scoring each on NoW (0.00 is the FLAME mean face, the
 # Bayes-optimal guess given no information):
 #
-#   model       0.00    0.25    0.40    0.50    0.60    0.80    1.00
-#   id_swap    1.3554  1.3300     -    1.3485     -       -    1.5296  (2k ids)
-#   digi_all   1.3554  1.3294     -    1.3241     -       -    1.4242  (10k)
-#   digi_full  1.3554  1.3224     -    1.3109     -       -    1.3978  (110k)
-#   deca_conf  1.3554     -    1.2978     -    1.2923  1.3079 1.3499  (+DECA weights)
+#   model      0.00   0.10   0.20   0.25   0.30   0.40   0.50   0.60   0.80   1.00
+#   id_swap   1.3554    -      -   1.3300   -      -   1.3485   -      -    1.5296
+#   digi_all  1.3554    -      -   1.3294   -      -   1.3241   -      -    1.4242
+#   digi_full 1.3554    -      -   1.3224   -      -   1.3109   -      -    1.3978
+#   deca_conf 1.3554    -      -      -     -   1.2978   -   1.2923 1.3079 1.3499
+#   deca_id   1.3554 1.3180 1.2801   -   1.2566 1.2470   -   1.2704 1.3482 1.4834
 #
-# The optimum has crept 0.25 -> 0.50 -> 0.60 as data and loss weighting
-# improved; an optimum at 1.0 would mean no post-hoc scaling is needed at all.
-# Re-measure with scripts/now_predict.py --shape-scale after any training change.
-SHAPE_CALIBRATION = 0.60
+# The optimum ran 0.25 -> 0.50 -> 0.60 while data and loss weighting improved,
+# and it was tempting to read that as progress toward needing no scaling at
+# all. The identity loss reversed it to 0.40 and improved NoW at the same time,
+# so that reading was wrong. What actually moves the optimum is how large a
+# deviation the encoder commits to: deca_id's between-subject shape spread is
+# 4.447 against deca_conf's 2.392, and a bolder prediction needs more
+# shrinkage, not less.
+#
+# The two metrics genuinely pull apart here. NoW measures surface distance, so
+# it rewards hedging toward the mean face; the identity ratio measures
+# discriminability, so it rewards committing. deca_id is better on both, but
+# its NoW curve is four times steeper across the grid (0.24 mm against 0.06),
+# which is what a bolder model looks like -- more to gain and more to lose from
+# getting this scalar wrong.
+#
+# It is fit on NoW validation, the same set reported on, so treat it as a
+# calibration constant rather than as evidence. Re-measure with
+# scripts/now_predict.py --shape-scale after any training change; it is
+# specific to a checkpoint and carrying an old value to a new one silently
+# mis-scales every exported face.
+SHAPE_CALIBRATION = 0.40   # deca_id; was 0.60 for deca_conf
 
 
 @runtime_checkable
