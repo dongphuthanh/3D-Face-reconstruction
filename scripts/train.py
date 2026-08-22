@@ -200,7 +200,9 @@ def main():
         # keeping the augmented view's landmark supervision.
         n_render = (img.shape[0] // 2 if (paired and a.render_first_only)
                     else img.shape[0])
-        render, mask = renderer.render(verts[:n_render], pred[:n_render])
+        rp = renderer.raster_pass(verts[:n_render], pred[:n_render])
+        fid, bary, mask, normals = rp
+        render = renderer.shade(fid, bary, mask, normals, pred[:n_render])
         target = img[:n_render].permute(0, 2, 3, 1)
 
         l_lmk = landmark_loss(renderer.landmarks(verts, pred.cam), gt)
@@ -224,13 +226,17 @@ def main():
 
         # Identity: composite the render into the photograph over the face
         # region and require a recognition network to see the same person.
-        # pred.albedo/light are not detached here because the render already
-        # carries them; what matters is that the comparison target is the real
-        # photo, so the only way to reduce this is better geometry.
+        #
+        # Re-shaded with detached light and albedo rather than reusing `render`
+        # above -- DECA's id_shape_only. Sharing the render would let this term
+        # be paid off by nudging 50 albedo coefficients, which is both easier
+        # than fixing geometry and useless to us. The rasterisation is shared,
+        # so the second image costs a shading pass, not a second rasterise.
         l_id = render.new_zeros(())
         if id_loss is not None:
-            overlay = make_overlay(render, target, mask)
-            l_id = id_loss(overlay, target)
+            geo = renderer.shade(fid, bary, mask, normals, pred[:n_render],
+                                 detach_appearance=True)
+            l_id = id_loss(make_overlay(geo, target, mask), target)
         l_con = consistency_loss(pred.shape) if (paired and a.w_con > 0) else render.new_zeros(())
         loss = (a.w_lmk * l_lmk + a.w_pho * l_pho + l_reg
                 + a.w_con * l_con + a.w_swap * l_swap + a.w_id * l_id)
