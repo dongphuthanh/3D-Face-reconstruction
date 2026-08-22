@@ -14,6 +14,7 @@ SUITES = [
     ("mediapipe detector", "test_detect.py", []),
     ("paired-view augmentation", "test_augment.py", []),
     ("identity loss gradient routing", "test_identity_loss.py", []),
+    ("eye/lip closure landmarks", "test_closure_loss.py", []),
     ("gltf export + validator", "test_export.py", []),
     ("chain inverts", "test_fit_synthetic.py", []),
     ("overfits a batch", "train_overfit.py", ["300", "3e-4"]),   # short run for CI

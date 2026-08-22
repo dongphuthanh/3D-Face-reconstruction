@@ -30,8 +30,9 @@ from face3d.facemask import face_faces, face_region
 from face3d.flame_torch import FlameTorch
 from face3d.landmarks import LandmarkEmbedding
 from face3d.augment import consistency_loss, swap_shape, two_views
-from face3d.losses import (IdentityLoss, landmark_loss, make_overlay,
-                           photometric_loss, regularization)
+from face3d.losses import (EYE_PAIRS, LIP_PAIRS, IdentityLoss, closure_loss,
+                           landmark_loss, make_overlay, photometric_loss,
+                           regularization)
 from face3d.pipeline import FaceRenderer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -54,6 +55,14 @@ def main():
                          "composited into the photo, and the photo itself. "
                          "Albedo and light are detached so it supervises shape "
                          "alone -- the only term that does")
+    ap.add_argument("--w-eye", type=float, default=0.0,
+                    help="DECA's eye-closure term (they use 1.0): match the "
+                         "eyelid gap directly. The plain landmark loss averages "
+                         "over 105 points, so eyelids are under 4% of it and "
+                         "every eye comes out half-open")
+    ap.add_argument("--w-lip", type=float, default=0.0,
+                    help="DECA's lip-distance term (they use 0.5): same argument "
+                         "for mouth opening")
     ap.add_argument("--w-light", type=float, default=1.0,
                     help="spherical-harmonic regularisation. DECA's strongest "
                          "weight; unconstrained light explains away shading that "
@@ -205,7 +214,15 @@ def main():
         render = renderer.shade(fid, bary, mask, normals, pred[:n_render])
         target = img[:n_render].permute(0, 2, 3, 1)
 
-        l_lmk = landmark_loss(renderer.landmarks(verts, pred.cam), gt)
+        proj = renderer.landmarks(verts, pred.cam)
+        l_lmk = landmark_loss(proj, gt)
+
+        # Eye and lip closure. Computed on every view, not just the rendered
+        # ones -- these are landmark-space terms and cost nothing.
+        l_eye = (closure_loss(proj, gt, EYE_PAIRS) if a.w_eye > 0
+                 else proj.new_zeros(()))
+        l_lip = (closure_loss(proj, gt, LIP_PAIRS) if a.w_lip > 0
+                 else proj.new_zeros(()))
 
         # DECA-style swap: re-render each view using the *other* view's shape,
         # everything else unchanged, and apply the ordinary reconstruction
@@ -239,8 +256,9 @@ def main():
             l_id = id_loss(make_overlay(geo, target, mask), target)
         l_con = consistency_loss(pred.shape) if (paired and a.w_con > 0) else render.new_zeros(())
         loss = (a.w_lmk * l_lmk + a.w_pho * l_pho + l_reg
-                + a.w_con * l_con + a.w_swap * l_swap + a.w_id * l_id)
-        return (loss, (l_lmk, l_pho, l_reg, l_con, l_swap, l_id),
+                + a.w_con * l_con + a.w_swap * l_swap + a.w_id * l_id
+                + a.w_eye * l_eye + a.w_lip * l_lip)
+        return (loss, (l_lmk, l_pho, l_reg, l_con, l_swap, l_id, l_eye, l_lip),
                 render, mask, img[:n_render])
 
     hist = []
@@ -249,7 +267,7 @@ def main():
     for ep in range(a.epochs):
         enc.train()
         t0 = time.time()
-        agg = np.zeros(7)
+        agg = np.zeros(9)
         n = 0
         for batch in dl:
             opt.zero_grad()
@@ -277,7 +295,7 @@ def main():
         agg /= max(n, 1)
 
         enc.eval()
-        vagg = np.zeros(7)
+        vagg = np.zeros(9)
         m = 0
         with torch.no_grad():
             for batch in vl:
@@ -293,6 +311,8 @@ def main():
         con = f" con {agg[4]:.4f}" if a.w_con > 0 else ""
         con += f" swap {agg[5]:.4f}" if a.w_swap > 0 else ""
         con += f" id {agg[6]:.4f}" if a.w_id > 0 else ""
+        con += f" eye {agg[7]:.4f}" if a.w_eye > 0 else ""
+        con += f" lip {agg[8]:.4f}" if a.w_lip > 0 else ""
         print(f"  ep {ep:2d}  train {agg[0]:.4f} (lmk {agg[1]:.4f} pho {agg[2]:.4f}{con})   "
               f"val {vagg[0]:.4f} (lmk {vagg[1]:.4f} pho {vagg[2]:.4f})   "
               f"{time.time() - t0:.0f}s", flush=True)

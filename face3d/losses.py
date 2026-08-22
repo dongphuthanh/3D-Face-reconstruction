@@ -82,6 +82,50 @@ def make_overlay(render, target, mask):
     return render * m + target.detach() * (1 - m)
 
 
+# Eyelid and inner-lip pairs, as ROW indices into our 105-point MediaPipe
+# embedding (not MediaPipe's own 0-467 numbering, and not DECA's 68-point dlib
+# indices -- both of those are wrong here and wrong silently).
+#
+#   eyes  (159,145) (158,153) left, (386,374) (385,380) right
+#   lips  (13,14) (82,87) (312,317), the inner lip contour
+#
+# DECA uses two pairs per eye and three across the mouth; these are the direct
+# MediaPipe analogues of the points they picked.
+EYE_PAIRS = ((46, 40), (45, 41), (30, 24), (29, 25))
+LIP_PAIRS = ((66, 67), (76, 78), (94, 96))
+
+
+def _pair_distance(lmk, pairs):
+    """(B,L,2) -> (B,P): Euclidean distance across each landmark pair.
+
+    The epsilon inside the square root is not decoration. A fully closed eye or
+    a shut mouth puts the two landmarks on top of each other, and sqrt has
+    infinite gradient at zero -- exactly the configuration these losses exist to
+    supervise would produce NaNs. DECA omits it and gets away with it because
+    their detector never returns an exactly-zero distance.
+    """
+    a = [p[0] for p in pairs]
+    b = [p[1] for p in pairs]
+    d = lmk[:, a, :2] - lmk[:, b, :2]
+    return torch.sqrt((d ** 2).sum(-1) + 1e-12)
+
+
+def closure_loss(pred, target, pairs):
+    """Match the OPENNESS of the eyes and mouth, not just landmark positions.
+
+    The plain landmark term averages L1 over all 105 points, so the handful
+    that describe an eyelid or a lip contribute under 4% of it -- and their
+    displacement when an eye closes is small in absolute pixels, far smaller
+    than a jaw or contour landmark moving under pose. The result is an encoder
+    that scores well on landmarks while leaving every eye half-open.
+
+    Penalising the pairwise distance directly makes closure its own objective,
+    at a magnitude that does not depend on how large the face is in frame.
+    DECA weights eyes 1.0 and lips 0.5.
+    """
+    return (_pair_distance(pred, pairs) - _pair_distance(target, pairs)).abs().mean()
+
+
 def shape_consistency_loss(shape, group_id):
     """Images of the same person must yield the same identity coefficients.
 
