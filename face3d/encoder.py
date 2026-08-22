@@ -27,6 +27,7 @@ from .params import FlameParams
 #   digi_full 1.3554    -      -   1.3224   -      -   1.3109   -      -    1.3978
 #   deca_conf 1.3554    -      -      -     -   1.2978   -   1.2923 1.3079 1.3499
 #   deca_id   1.3554 1.3180 1.2801   -   1.2566 1.2470   -   1.2704 1.3482 1.4834
+#   deca_full 1.3554      - 1.2897      - 1.2710 1.2679 1.2777 1.3002      -      -
 #
 # The optimum ran 0.25 -> 0.50 -> 0.60 while data and loss weighting improved,
 # and it was tempting to read that as progress toward needing no scaling at
@@ -48,7 +49,7 @@ from .params import FlameParams
 # scripts/now_predict.py --shape-scale after any training change; it is
 # specific to a checkpoint and carrying an old value to a new one silently
 # mis-scales every exported face.
-SHAPE_CALIBRATION = 0.40   # deca_id; was 0.60 for deca_conf
+SHAPE_CALIBRATION = 0.40   # deca_id and deca_full both; was 0.60 for deca_conf
 
 
 @runtime_checkable
