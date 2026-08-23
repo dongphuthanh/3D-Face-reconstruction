@@ -29,6 +29,7 @@ from .params import FlameParams
 #   deca_id   1.3554 1.3180 1.2801   -   1.2566 1.2470   -   1.2704 1.3482 1.4834
 #   deca_full 1.3554      - 1.2897      - 1.2710 1.2679 1.2777 1.3002      -      -
 #   deca_jit  1.3554      - 1.2842      - 1.2654 1.2654 1.2772 1.3032      -      -
+#   deca_cel  1.3554      - 1.2995      - 1.2870 1.2910 1.3091 1.3426      -      -
 #
 # The optimum ran 0.25 -> 0.50 -> 0.60 while data and loss weighting improved,
 # and it was tempting to read that as progress toward needing no scaling at
@@ -54,6 +55,23 @@ from .params import FlameParams
 # the last gap between this pipeline and DECA's, which makes the null result
 # the useful part: the remaining distance to their number is not explained by
 # a missing augmentation.
+#
+# deca_cel swaps the mix corpus FFHQ -> CelebA and is WORSE: 1.2870 against
+# deca_full's 1.2679, identity ratio unmoved at 1.15, between-subject spread
+# 4.466 -> 4.567. The prediction was that CelebA's identity diversity -- 0.98
+# between-subject facenet distance against DigiFace's 0.76 -- would widen the
+# predicted shape spread. It did not, for a structural reason that should have
+# been checked first: diversity can only widen shape spread through a loss that
+# CONTRASTS identities, and the only such loss is the swap, which runs solely
+# on DigiFace. Mix batches feed the photometric and identity terms, both
+# per-image. Changing the mix corpus could not have produced the effect.
+#
+# What it did change is sharpness, for the worse. FFHQ crops downsample from
+# 1024px originals; CelebA-aligned is 178x218, so a 1.6 crop upsamples a ~110px
+# face to fill 224. Measured Laplacian variance 366 against 232, a 1.58x drop,
+# and the photometric loss is the main consumer of mix batches. FFHQ's 18k
+# images repeated ~35x beat CelebA's 145k repeated ~3x, so corpus size was
+# never the constraint either.
 #
 # It is fit on NoW validation, the same set reported on, so treat it as a
 # calibration constant rather than as evidence. Re-measure with
