@@ -211,6 +211,10 @@ rows = []
 for name, nature, loader in (
         ("digiface", "synthetic 112px CG", lambda: from_ingest("digiface")),
         ("arc2face", "real, restored 448px", lambda: from_ingest("arc2face")),
+        # celeba streams from parquet; celeba_disk reads what ingest_celeba.py
+        # actually wrote. They should agree -- if they do not, the ingest has
+        # mismatched crops to subject labels, which training would not notice.
+        ("celeba_disk", "ingested crops, m1.6", lambda: from_ingest("celeba")),
         ("celeba", "real, aligned 178x218", lambda: from_celeba(1.15)),
         ("celeba16", "same, margin 1.6", lambda: from_celeba(1.6)),
         ("NoW", "real photographs", from_now)):

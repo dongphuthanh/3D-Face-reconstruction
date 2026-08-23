@@ -47,6 +47,12 @@ data/digiface/
 # remotely and only the recipe is tracked.
 data/arc2face/
 
+# CelebA crops written by scripts/ingest_celeba.py -- 161k files, and the same
+# no-redistribution terms as the cache below. Listed separately because the
+# cache rule alone left these visible to `git add -A`, which then spent minutes
+# trying to stage 12 GB of licence-restricted images.
+data/celeba/
+
 # CelebA, pulled as parquet by scripts/diag_corpus_identity.py. The release
 # agreement is explicit: non-commercial research only, and "you agree not to
 # further copy, publish or distribute any portion". Copies are permitted for

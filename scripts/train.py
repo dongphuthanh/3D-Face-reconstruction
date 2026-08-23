@@ -102,6 +102,14 @@ def main():
                          "model is actually asked about")
     ap.add_argument("--mix-batch", type=int, default=0,
                     help="FFHQ batch size for the mix; defaults to --batch")
+    ap.add_argument("--mix-data", default="",
+                    help="corpus for the mix batch; defaults to data/ffhq. Any "
+                         "ingest with the same crops/ + landmarks_<size>.npz "
+                         "layout works. data/celeba is 202k real photographs "
+                         "against FFHQ's 18k, so a 3-epoch run repeats it ~3x "
+                         "rather than ~35x, and its identities are the most "
+                         "mutually distinct measured -- see "
+                         "scripts/diag_corpus_identity.py")
     ap.add_argument("--arcface", action="store_true",
                     help="MICA-style: take shape from a cached ArcFace identity "
                          "embedding instead of the ResNet trunk. The other five "
@@ -154,10 +162,12 @@ def main():
 
     mix_dl = None
     if a.mix_ffhq > 0:
-        mix_ds = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train")
+        mix_root = pathlib.Path(a.mix_data) if a.mix_data else ROOT / "data" / "ffhq"
+        mix_ds = FFHQCrops(mix_root, a.size, "train")
         mix_dl = DataLoader(mix_ds, batch_size=a.mix_batch or a.batch, shuffle=True,
                             num_workers=2, drop_last=True, persistent_workers=True)
-        print(f"    mixing {len(mix_ds)} FFHQ photographs at weight {a.mix_ffhq}")
+        print(f"    mixing {len(mix_ds)} {mix_root.name} photographs "
+              f"at weight {a.mix_ffhq}")
 
     id_loss = IdentityLoss(DEV) if a.w_id > 0 else None
     Enc = ArcFaceShapeEncoder if a.arcface else ResNetEncoder
