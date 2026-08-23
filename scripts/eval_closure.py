@@ -18,6 +18,7 @@ Measured after the deca_full run, 800 images over 5465 held-out identities:
     deca_conf     10.6%     16.5%
     deca_id       15.8%     24.4%
     deca_full      6.2%     11.9%
+    deca_jit       6.8%     12.1%
 
 The identity loss made closure noticeably WORSE. It rewards committing to a
 distinctive face, and a distinctive face is apparently paid for partly in eyelid
@@ -52,7 +53,11 @@ loader = torch.utils.data.DataLoader(ds, batch_size=16, shuffle=False, num_worke
 
 print(f"{len(ds)} held-out identities")
 print(f"{'model':10s} {'eye err':>10s} {'lip err':>10s} {'eye rel':>9s} {'lip rel':>9s}")
-for arm in ("deca_conf", "deca_id", "deca_full"):
+# Arms come from argv so a new run can be measured without editing this file.
+# The hardcoded tuple silently omitted deca_jit: the table printed three rows,
+# looked complete, and said nothing about the model actually under test.
+ARMS = sys.argv[1:] or ["deca_conf", "deca_id", "deca_full", "deca_jit"]
+for arm in ARMS:
     ck = ROOT / "runs" / arm / "encoder.pt"
     if not ck.exists():
         print(f"{arm:10s} missing"); continue

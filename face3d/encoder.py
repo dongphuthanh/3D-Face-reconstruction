@@ -28,6 +28,7 @@ from .params import FlameParams
 #   deca_conf 1.3554    -      -      -     -   1.2978   -   1.2923 1.3079 1.3499
 #   deca_id   1.3554 1.3180 1.2801   -   1.2566 1.2470   -   1.2704 1.3482 1.4834
 #   deca_full 1.3554      - 1.2897      - 1.2710 1.2679 1.2777 1.3002      -      -
+#   deca_jit  1.3554      - 1.2842      - 1.2654 1.2654 1.2772 1.3032      -      -
 #
 # The optimum ran 0.25 -> 0.50 -> 0.60 while data and loss weighting improved,
 # and it was tempting to read that as progress toward needing no scaling at
@@ -44,12 +45,22 @@ from .params import FlameParams
 # which is what a bolder model looks like -- more to gain and more to lose from
 # getting this scalar wrong.
 #
+# deca_jit adds DECA's randomised crop scale to deca_full and changes nothing.
+# NoW 1.2679 -> 1.2654, closure 6.2/11.9% -> 6.8/12.1%, identity ratio
+# 1.15 -> 1.18: two metrics marginally better, one marginally worse, every
+# difference far below what this setup can resolve. Seed variance has never
+# been measured here, so the smallest defensible claim is that crop jitter has
+# no effect large enough to detect -- not that it helps by 0.0025 mm. That was
+# the last gap between this pipeline and DECA's, which makes the null result
+# the useful part: the remaining distance to their number is not explained by
+# a missing augmentation.
+#
 # It is fit on NoW validation, the same set reported on, so treat it as a
 # calibration constant rather than as evidence. Re-measure with
 # scripts/now_predict.py --shape-scale after any training change; it is
 # specific to a checkpoint and carrying an old value to a new one silently
 # mis-scales every exported face.
-SHAPE_CALIBRATION = 0.40   # deca_id and deca_full both; was 0.60 for deca_conf
+SHAPE_CALIBRATION = 0.40   # deca_id, deca_full, deca_jit; was 0.60 for deca_conf
 
 
 @runtime_checkable
@@ -91,9 +102,11 @@ class ResNetEncoder(nn.Module, Encoder):
         # off-screen and the photometric loss has no gradient to work with.
         # Small-gain rather than exactly zero: a zero weight matrix makes
         # dL/d(trunk) = dL/d(out) @ W identically zero, so the backbone receives
-        # no gradient at all on the first step. std=1e-3 keeps the initial
-        # prediction within ~0.05 of the bias (ResNet-50 features are large enough that (still the mean face) while
-        # letting the trunk train from iteration one.
+        # no gradient at all on the first step. std=3e-4 keeps the initial
+        # prediction within ~0.05 of the bias (still the mean face) while
+        # letting the trunk train from iteration one. The gain has to be this
+        # small because ResNet-50 pools 2048 features: at std=1e-3 the summed
+        # contribution is large enough to move the starting mesh off the mean.
         nn.init.normal_(self.head.weight, std=3e-4)
         nn.init.zeros_(self.head.bias)
         with torch.no_grad():
