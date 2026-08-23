@@ -4,10 +4,12 @@ The identity loss scores geometry with InceptionResnetV1/VGGFace2, a network
 trained on real photographs. DigiFace is synthetic 112px CG, so the term could
 in principle have been near-vacuous on ~97% of our batches. It is not:
 
-    corpus     nature                 within  between  ratio    AUC
-    digiface   synthetic 112px CG     0.3225   0.7620   2.36   0.971
-    arc2face   real, restored 448px   0.2714   0.9611   3.54   0.998
-    NoW        real photographs       0.2020   0.9192   4.55   0.999
+    corpus     nature                  within  between  ratio    AUC
+    digiface   synthetic 112px CG      0.3225   0.7620   2.36   0.971
+    celeba     real, aligned 178x218   0.3320   0.9814   2.96   0.974
+    celeba16   same, margin 1.6        0.3506   0.9765   2.78   0.976
+    arc2face   real, restored 448px    0.2714   0.9611   3.54   0.998
+    NoW        real photographs        0.2020   0.9192   4.55   0.999
 
     within  = mean cosine distance between images of ONE subject
     between = mean cosine distance between images of DIFFERENT subjects
@@ -17,13 +19,25 @@ DigiFace identities are cleanly separable (AUC 0.971), so --w-id 0.2 is doing
 real work -- which independently corroborates the identity ratio jumping
 0.92 -> 1.15 when that term was added.
 
-It is still the weakest of the three, in two different ways. Within-subject
-scatter is 60% higher than NoW (0.32 vs 0.20): facenet features drift more
-across views of one synthetic subject, so the loss target is noisier. More
-interesting is between-subject distance, 0.76 against 0.92 -- DigiFace's
-100k identities are LESS distinct from each other than 100k real people are.
-A parametric face generator samples a narrower region of face space, and that
-caps the between-subject shape spread any encoder trained on it can learn.
+Read the two columns separately; they say different things.
+
+BETWEEN is identity diversity, and it is where DigiFace is genuinely deficient:
+0.76 against 0.92-0.98 for every real corpus. Its 100k identities are less
+distinct FROM EACH OTHER than real people are, because a parametric generator
+samples a narrower region of face space. That caps the between-subject shape
+spread any encoder trained on it can reach, and is a candidate explanation for
+the identity ratio plateauing at 1.15-1.18. CelebA is the widest measured.
+
+WITHIN is how much one subject's images vary, and it is NOT simply "worse when
+higher". NoW's 0.20 is one capture session. CelebA's 0.33 is the same celebrity
+across years, makeup and lighting -- hard variation the shape must stay
+constant across, which is what the swap loss exists to exploit. The catch is
+that it also spans age and weight, which genuinely change 3D shape, so a
+CelebA identity is NOT one fixed geometry the way a DigiFace identity is.
+
+Margin sensitivity is small: CelebA at 1.15 and 1.6 differ by 6% in ratio and
+0.002 in AUC. Corpora ingested at different margins (arc2face 1.15, digiface
+1.6) are therefore still comparable here.
 
 Use this as an acceptance test on a candidate corpus before training on it.
 Note what it cannot do: Arc2Face scores well here and still failed to transfer
@@ -31,13 +45,12 @@ to NoW (in-domain ratio 1.06, NoW 0.55-0.63, no shrinkage dip), because blind
 face restoration makes identity MORE recoverable than reality. A good score
 here is necessary, not sufficient.
 
-Every corpus is cropped identically (MediaPipe landmarks, margin 1.6) and
-capped at the same subject/image counts. NoW images are drawn round-robin
-across its four capture categories: taking the first N of a flat sorted list
-draws them all from one session and understates within-subject scatter
-(ratio 5.42 rather than 4.55).
+Corpora are cropped identically (MediaPipe landmarks) and capped at the same
+subject/image counts. NoW images are drawn round-robin across its four capture
+categories: taking the first N of a flat sorted list draws them all from one
+session and understates within-subject scatter (ratio 5.42 rather than 4.55).
 
-    python scripts/diag_corpus_identity.py [digiface] [arc2face] [NoW]
+    python scripts/diag_corpus_identity.py [digiface] [celeba] [arc2face] [NoW]
 """
 import pathlib, sys, warnings
 import numpy as np
@@ -112,6 +125,51 @@ def from_ingest(name):
     return crops, np.array(labels)
 
 
+def from_celeba(margin=1.6, shard=0):
+    """CelebA: real, identity-labelled, un-restored. Streamed from the parquet
+    mirror that carries celeb_id (the official identity file is request-gated).
+
+    Shards are sorted by celeb_id, so one covers enough identities. The images
+    are the ALIGNED 178x218 crops, i.e. already tight on the face like
+    Arc2Face -- cropping them at 1.6 pads with black, so the margin is a
+    parameter here and the caller runs both.
+    """
+    import io
+    import pyarrow.parquet as pq
+    from huggingface_hub import hf_hub_download
+
+    path = hf_hub_download(
+        "flwrlabs/celeba",
+        f"img_align+identity+attr/train-{shard:05d}-of-00019.parquet",
+        repo_type="dataset", cache_dir=str(ROOT / "data" / "_hfcache"))
+    tab = pq.ParquetFile(path).read(columns=["image", "celeb_id"])
+    ids = tab.column("celeb_id").to_pylist()
+    imgs = tab.column("image").to_pylist()
+
+    groups = {}
+    for i, cid in enumerate(ids):
+        groups.setdefault(cid, []).append(i)
+    usable = [c for c, v in groups.items() if len(v) >= 2][:N_SUBJ]
+
+    det = FaceDetector()
+    crops, labels, miss = [], [], 0
+    for j, cid in enumerate(usable):
+        for i in groups[cid][:N_IMG]:
+            rec = imgs[i]
+            raw = rec["bytes"] if isinstance(rec, dict) else rec
+            im = np.asarray(Image.open(io.BytesIO(raw)).convert("RGB"))
+            res = det.detect(im)
+            if not res:
+                miss += 1
+                continue
+            c, _ = crop_square(im, res["norm"], size=224, margin=margin)
+            crops.append(c)
+            labels.append(j)
+    det.close()
+    print(f"  (CelebA margin {margin}: {len(usable)} ids, {miss} undetected)")
+    return crops, np.array(labels)
+
+
 def from_now():
     """NoW: full photographs, cropped with the same detector and margin."""
     base = ROOT / "NoW_Dataset" / "final_release_version" / "iphone_pictures"
@@ -153,6 +211,8 @@ rows = []
 for name, nature, loader in (
         ("digiface", "synthetic 112px CG", lambda: from_ingest("digiface")),
         ("arc2face", "real, restored 448px", lambda: from_ingest("arc2face")),
+        ("celeba", "real, aligned 178x218", lambda: from_celeba(1.15)),
+        ("celeba16", "same, margin 1.6", lambda: from_celeba(1.6)),
         ("NoW", "real photographs", from_now)):
     if len(sys.argv) > 1 and name not in sys.argv[1:]:
         continue

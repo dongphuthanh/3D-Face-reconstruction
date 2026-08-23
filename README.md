@@ -337,6 +337,7 @@ implementation plan for the full register.
 | FFHQ (permissive subset) | NVlabs | Yes (CC BY / PD / CC0) |
 | DigiFace-1M | Microsoft | Data no; trained models yes (R-UDA) |
 | Arc2Face | HuggingFace | CC BY-NC-SA 4.0, ShareAlike |
+| CelebA | MMLAB CUHK, via `flwrlabs/celeba` | **No** — non-commercial research, no redistribution |
 
 Arc2Face is derived from WebFace42M, i.e. scraped source images. The CC licence
 covers the authors' restoration work, not the provenance of what was restored,
@@ -344,6 +345,15 @@ and ShareAlike may bind models trained on it. It is used because 448px real
 photographs with 30k identities per archive is what the identity signal needs;
 the trade against the project's no-scraping rule is deliberate and recorded
 here rather than glossed.
+
+CelebA carries the same provenance caveat — its images are "obtained from the
+Internet", so the no-scraping rule is traded again knowingly. Two further terms
+bind it specifically. Redistribution is forbidden outright, with copies allowed
+only for internal use at a single site, which is what `data/_hfcache/` is. And
+the identity annotations are formally released only on request; the
+`flwrlabs/celeba` mirror ships them without that step. Only the recipe is
+tracked, never the data. Currently used for corpus measurement
+(`scripts/diag_corpus_identity.py`), not for training.
 
 **This project is non-commercial.** DECA's licence forbids distributing the
 model, so shipping DECA-derived weights to a browser is not possible; on-device
