@@ -19,6 +19,7 @@ Measured after the deca_full run, 800 images over 5465 held-out identities:
     deca_id       15.8%     24.4%
     deca_full      6.2%     11.9%
     deca_jit       6.8%     12.1%
+    deca_celswap   7.5%     16.2%   <- trained on CelebA, so OUT of domain here
 
 The identity loss made closure noticeably WORSE. It rewards committing to a
 distinctive face, and a distinctive face is apparently paid for partly in eyelid
@@ -27,6 +28,12 @@ more than halves what remains.
 
 This is the whole reason the script exists: those three models sit within
 0.02 mm of each other on NoW and hide a 4x spread in expression fidelity.
+
+One limit to respect. The held-out identities are DigiFace, so this is
+in-domain for anything trained on DigiFace and out-of-domain for anything not.
+deca_celswap trained on CelebA alone and never saw a DigiFace face, so its
+7.5/16.2% bounds its closure error rather than measuring it, and reading it
+against deca_full's 6.2/11.8% overstates the gap by an unknown amount.
 """
 import pathlib, sys
 import numpy as np

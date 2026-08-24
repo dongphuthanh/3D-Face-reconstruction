@@ -30,6 +30,7 @@ from .params import FlameParams
 #   deca_full 1.3554      - 1.2897      - 1.2710 1.2679 1.2777 1.3002      -      -
 #   deca_jit  1.3554      - 1.2842      - 1.2654 1.2654 1.2772 1.3032      -      -
 #   deca_cel  1.3554      - 1.2995      - 1.2870 1.2910 1.3091 1.3426      -      -
+#   deca_csw  1.3554      - 1.2690      - 1.2457 1.2408 1.2540 1.2851      -      -
 #
 # The optimum ran 0.25 -> 0.50 -> 0.60 while data and loss weighting improved,
 # and it was tempting to read that as progress toward needing no scaling at
@@ -72,6 +73,28 @@ from .params import FlameParams
 # and the photometric loss is the main consumer of mix batches. FFHQ's 18k
 # images repeated ~35x beat CelebA's 145k repeated ~3x, so corpus size was
 # never the constraint either.
+#
+# deca_csw is the same corpus in the position that can actually use it: CelebA
+# driving the SWAP loss, split by age and weight so an identity is not asked to
+# hold shape across them, at matched steps (36 epochs x 1,069 = 38,484 against
+# deca_full's 3 x 12,979). 1.2408 mm, the best measured -- 0.027 below
+# deca_full and 0.006 below deca_id, the previous best.
+#
+# The identity-diversity prediction is half confirmed. Between-subject shape
+# spread reached 4.842, the widest measured (deca_full 4.466), so real
+# identities did widen what the encoder commits to. But within-subject spread
+# grew in step, 3.870 -> 4.250, so the RATIO sat at 1.14 and did not improve.
+# Wider and looser together, which is what a corpus whose identities are real
+# but photographed across years should produce.
+#
+# Closure got worse, 6.2/11.8% -> 7.5/16.2%, and that number is not a fair
+# comparison: eval_closure scores DigiFace held-out identities, which is
+# in-domain for deca_full and out-of-domain for deca_csw, which never saw
+# DigiFace. It bounds the regression rather than measuring it. NoW is the
+# clean comparison -- neither model trained on it.
+#
+# 36 passes over 8,557 subjects did not overfit: val flattened at 0.2106,
+# 0.2108, 0.2108 across the last three epochs and never rose.
 #
 # It is fit on NoW validation, the same set reported on, so treat it as a
 # calibration constant rather than as evidence. Re-measure with
