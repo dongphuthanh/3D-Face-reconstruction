@@ -114,6 +114,20 @@ def main():
                          "subject yields duplicate views and a swap constraint "
                          "that is trivially satisfied. Set this to k when the "
                          "corpus has many small groups")
+    ap.add_argument("--identity-data2", default="",
+                    help="a SECOND identity corpus, drawn as its own paired "
+                         "batch each step and driving swap exactly like the "
+                         "first. Concatenating instead would let corpus size "
+                         "decide the mix -- CelebA's 8,557 subjects against "
+                         "DigiFace's 103,837 is 7.6%, effectively nothing. A "
+                         "separate stream gives each an equal say whatever "
+                         "their sizes")
+    ap.add_argument("--identity-cache2", default="")
+    ap.add_argument("--identity-min-images2", type=int, default=2)
+    ap.add_argument("--identity2-batch", type=int, default=0,
+                    help="defaults to --batch. Halve both to keep images per "
+                         "step, and so wall-clock, unchanged")
+    ap.add_argument("--w-identity2", type=float, default=1.0)
     ap.add_argument("--mix-data", default="",
                     help="corpus for the mix batch; defaults to data/ffhq. Any "
                          "ingest with the same crops/ + landmarks_<size>.npz "
@@ -178,6 +192,18 @@ def main():
     dl = DataLoader(tr, batch_size=a.batch, shuffle=True, num_workers=4,
                     drop_last=True, persistent_workers=True)
     vl = DataLoader(va, batch_size=a.batch, num_workers=2)
+
+    id2_dl = None
+    if a.identity_data2:
+        id2_ds = IdentityPairs(pathlib.Path(a.identity_data2), a.size, "train",
+                               embeddings=a.arcface, k=a.images_per_identity,
+                               cache_name=a.identity_cache2 or None,
+                               min_images=a.identity_min_images2)
+        id2_dl = DataLoader(id2_ds, batch_size=a.identity2_batch or a.batch,
+                            shuffle=True, num_workers=2, drop_last=True,
+                            persistent_workers=True)
+        print(f"    second identity corpus: {len(id2_ds)} subjects from "
+              f"{pathlib.Path(a.identity_data2).name} at weight {a.w_identity2}")
 
     mix_dl = None
     if a.mix_ffhq > 0:
@@ -317,6 +343,7 @@ def main():
     hist = []
     done = 0
     mix_iter = iter(mix_dl) if mix_dl is not None else None
+    id2_iter = iter(id2_dl) if id2_dl is not None else None
     for ep in range(a.epochs):
         enc.train()
         t0 = time.time()
@@ -324,7 +351,27 @@ def main():
         n = 0
         for batch in dl:
             opt.zero_grad()
+            # Each auxiliary batch is backwarded as soon as it is computed
+            # rather than summed into one graph. The gradients accumulate
+            # identically and clipping still sees the full sum, but peak VRAM
+            # becomes the LARGEST of the batches instead of all of them at
+            # once: two identity streams plus the mix reached 9.84 GB on an
+            # 8 GB card, which did not OOM but spilled to host memory and ran
+            # 50x slower.
             loss, terms, *_ = step(batch)
+            loss.backward()
+            total = loss.item()
+            if id2_dl is not None:
+                # Paired and swapped exactly like the primary corpus: these are
+                # real identity groups, not photographs to reconstruct.
+                try:
+                    b2 = next(id2_iter)
+                except (StopIteration, NameError):
+                    id2_iter = iter(id2_dl)
+                    b2 = next(id2_iter)
+                l2, _, *_ = step(b2)
+                (a.w_identity2 * l2).backward()
+                total += a.w_identity2 * l2.item()
             if mix_dl is not None:
                 # Reconstruction only: no swap, no pairing. This batch exists to
                 # keep the encoder honest about real photographs.
@@ -334,14 +381,14 @@ def main():
                     mix_iter = iter(mix_dl)
                     mb = next(mix_iter)
                 mloss, _, *_ = step(mb, augment=False, as_pairs=False, jitter=True)
-                loss = loss + a.mix_ffhq * mloss
-            loss.backward()
+                (a.mix_ffhq * mloss).backward()
+                total += a.mix_ffhq * mloss.item()
             torch.nn.utils.clip_grad_norm_(params, 5.0)
             opt.step()
             done += 1
             if done < steps:
                 sched.step()
-            agg += [loss.item()] + [x.item() for x in terms]
+            agg += [total] + [x.item() for x in terms]
             n += 1
             if a.limit_steps and n >= a.limit_steps:
                 break
