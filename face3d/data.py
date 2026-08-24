@@ -74,9 +74,12 @@ class IdentityPairs(Dataset):
     """
 
     def __init__(self, root, size=224, split="train", val_frac=0.05, seed=0,
-                 min_images=2, embeddings=False, k=2):
+                 min_images=2, embeddings=False, k=2, cache_name=None):
         root = pathlib.Path(root)
-        cache = root / f"landmarks_{size}.npz"
+        # cache_name lets a filtered grouping live beside the full ingest and
+        # share its crops -- CelebA writes landmarks_224_swap.npz, whose subject
+        # labels are split by age and weight, without duplicating 12 GB of jpgs.
+        cache = root / (cache_name or f"landmarks_{size}.npz")
         if not cache.exists():
             raise FileNotFoundError(
                 f"{cache} not found - run scripts/ingest_digiface.py first")

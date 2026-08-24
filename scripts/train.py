@@ -102,6 +102,18 @@ def main():
                          "model is actually asked about")
     ap.add_argument("--mix-batch", type=int, default=0,
                     help="FFHQ batch size for the mix; defaults to --batch")
+    ap.add_argument("--identity-cache", default="",
+                    help="landmark cache filename inside --identity-data; "
+                         "defaults to landmarks_<size>.npz. Use "
+                         "landmarks_224_swap.npz for CelebA, whose subject "
+                         "labels are split by age and weight so the swap loss "
+                         "is never asked to hold shape constant across them")
+    ap.add_argument("--identity-min-images", type=int, default=2,
+                    help="drop subjects with fewer images. IdentityPairs pads a "
+                         "short group by RESAMPLING, so with k=4 a 2-image "
+                         "subject yields duplicate views and a swap constraint "
+                         "that is trivially satisfied. Set this to k when the "
+                         "corpus has many small groups")
     ap.add_argument("--mix-data", default="",
                     help="corpus for the mix batch; defaults to data/ffhq. Any "
                          "ingest with the same crops/ + landmarks_<size>.npz "
@@ -151,8 +163,15 @@ def main():
     if a.identity_data:
         root = pathlib.Path(a.identity_data)
         K = a.images_per_identity
-        tr = IdentityPairs(root, a.size, "train", embeddings=a.arcface, k=K)
-        va = IdentityPairs(root, a.size, "val", embeddings=a.arcface, k=K)
+        tr = IdentityPairs(root, a.size, "train", embeddings=a.arcface, k=K,
+                           cache_name=a.identity_cache or None,
+                           min_images=a.identity_min_images)
+        va = IdentityPairs(root, a.size, "val", embeddings=a.arcface, k=K,
+                           cache_name=a.identity_cache or None,
+                           min_images=a.identity_min_images)
+        print(f"    {len(tr)} train subjects, {len(va)} held out"
+              f"  (>= {a.identity_min_images} images each"
+              f"{', ' + a.identity_cache if a.identity_cache else ''})")
     else:
         tr = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train")
         va = FFHQCrops(ROOT / "data" / "ffhq", a.size, "val")
