@@ -87,11 +87,24 @@ from .params import FlameParams
 # Wider and looser together, which is what a corpus whose identities are real
 # but photographed across years should produce.
 #
-# Closure got worse, 6.2/11.8% -> 7.5/16.2%, and that number is not a fair
-# comparison: eval_closure scores DigiFace held-out identities, which is
-# in-domain for deca_full and out-of-domain for deca_csw, which never saw
-# DigiFace. It bounds the regression rather than measuring it. NoW is the
-# clean comparison -- neither model trained on it.
+# Closure looked worse, 6.2/11.8% -> 7.5/16.2%, and that reading was wrong: it
+# scored DigiFace held-out identities, in-domain for deca_full and out-of-domain
+# for deca_csw, which never saw a DigiFace face. Scored on each model's own
+# corpus the conclusion inverts:
+#
+#     held-out set          deca_full      deca_csw
+#     CelebA, real photos   6.2 / 13.4%    5.2 / 12.2%
+#     DigiFace, synthetic   6.2 / 11.8%    7.5 / 16.2%
+#
+# On real photographs -- what this project actually reconstructs -- deca_csw is
+# better on both eyes and lips. It wins NoW, which is real scans of real people,
+# and closure on real faces; deca_full wins only on synthetic faces. deca_csw is
+# the model to ship.
+#
+# The asymmetry is still worth knowing: deca_full degrades gently off-domain
+# (6.2/11.8 -> 6.2/13.4) where deca_csw degrades sharply (5.2/12.2 -> 7.5/16.2),
+# so DigiFace teaches a more transferable eyelid and lip model even though it is
+# worse in absolute terms on real faces. A joint corpus is the obvious next try.
 #
 # 36 passes over 8,557 subjects did not overfit: val flattened at 0.2106,
 # 0.2108, 0.2108 across the last three epochs and never rose.
