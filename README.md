@@ -2,9 +2,28 @@
 
 Monocular 3D face reconstruction: one photo in, a rigged glTF head asset out.
 
-**Status: early.** The differentiable core is built and tested. The asset
-pipeline (rigging, glTF export) and the web frontend are not started. Numbers
+**Status: early.** The differentiable core and the asset pipeline are built and
+tested — training, evaluation, and glTF export with a rig, blendshapes and a
+baked texture all work end to end. The web frontend is not started. Numbers
 below are measured on this machine, not quoted from papers.
+
+See [MODEL_CARD.md](MODEL_CARD.md) for which checkpoint to use and why.
+
+## How this was built
+
+Written with substantial help from [Claude](https://claude.com/claude-code)
+(Anthropic), used as a pair-programming and research assistant: drafting code,
+running the training and evaluation sweeps, and writing up results. The
+direction, the questions worth asking, and the judgement about which results to
+trust were mine.
+
+Where that shows in the repo, deliberately: the commit messages and code
+comments record *why* a thing is the way it is, including the experiments that
+failed. Several conclusions here were wrong on the first measurement and were
+corrected — the CelebA mix corpus, the closure metric that inverted once scored
+on the right domain, the assumption that averaging shape across photos would
+help. Those are left in rather than tidied away, because a result you cannot
+see the working for is not worth much.
 
 ---
 
