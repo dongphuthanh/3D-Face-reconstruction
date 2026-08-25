@@ -30,7 +30,7 @@ from .params import FlameParams
 #   deca_full 1.3554      - 1.2897      - 1.2710 1.2679 1.2777 1.3002      -      -
 #   deca_jit  1.3554      - 1.2842      - 1.2654 1.2654 1.2772 1.3032      -      -
 #   deca_cel  1.3554      - 1.2995      - 1.2870 1.2910 1.3091 1.3426      -      -
-#   deca_csw  1.3554      - 1.2690      - 1.2457 1.2408 1.2540 1.2851      -      -
+#   deca_csw  1.3554      - 1.2690      - 1.2457 1.2408 1.2540 1.2851 1.3905 1.5485
 #   deca_jnt  1.3554      - 1.2878      - 1.2697 1.2688 1.2815 1.3060      -      -
 #
 # The optimum ran 0.25 -> 0.50 -> 0.60 while data and loss weighting improved,
@@ -132,6 +132,35 @@ from .params import FlameParams
 #
 # 36 passes over 8,557 subjects did not overfit: val flattened at 0.2106,
 # 0.2108, 0.2108 across the last three epochs and never rose.
+#
+# HOW CLOSE IS THIS TO JUST EMITTING THE MEAN FACE? Closer than the headline
+# numbers suggest, and the honest framing belongs here rather than in a commit
+# message nobody re-reads.
+#
+# deca_csw's raw prediction, alpha 1.00, scores 1.5485 mm. The mean face scores
+# 1.3554. The encoder's actual unshrunk output is WORSE THAN IGNORING THE PHOTO.
+# Shrinking to 0.40 is not a calibration nicety, it is the only reason the model
+# beats a constant, and even then by 0.115 mm.
+#
+# Measured over 200 FFHQ faces, neutral mesh, per-vertex:
+#
+#     raw prediction (a=1.0)   5.45 mm from mean face   4.63 mm between people
+#     as shipped     (a=0.4)   2.18 mm from mean face   1.79 mm between people
+#
+# So two different people's shipped meshes differ by 1.79 mm on average while
+# the error against ground truth is 1.24 mm. Signal is only ~1.4x the noise.
+# Rendered side by side (out/mean_face_check.png), a toddler, a boy, an elderly
+# woman and an adult man produce visibly near-identical neutral geometry.
+#
+# The fair context, which is not an excuse but is real: NoW's mean-face baseline
+# is 1.3554 and DECA reports ~1.09, so the entire achievable band is ~0.27 mm
+# wide. At 1.2408 this pipeline has taken ~43% of it. Monocular identity shape
+# is genuinely hard and everyone's numbers sit close to the constant baseline.
+#
+# What this does NOT indict: expression (closure 5.0/11.1% on real faces),
+# pose and camera (the overlay composites seamlessly), and albedo (skin tone is
+# captured). Those parts work. It is specifically IDENTITY SHAPE that is weak,
+# and no amount of corpus or augmentation work in this file has moved it much.
 #
 # It is fit on NoW validation, the same set reported on, so treat it as a
 # calibration constant rather than as evidence. Re-measure with
