@@ -1,0 +1,142 @@
+# Model card — face3d encoder
+
+Photograph → FLAME parameters → rigged glTF head.
+
+## Which checkpoint to ship
+
+**`runs/deca_joint` for quality. `runs/deca_full` if the weights must be
+licence-clean.** These are not the same answer and the difference is not
+technical — see Licensing.
+
+| | deca_full | deca_celswap | **deca_joint** |
+|---|---|---|---|
+| NoW median (best α) | 1.2679 | **1.2408** | 1.2688 |
+| closure, CelebA held-out (real) | 6.2 / 13.4% | 5.2 / 12.2% | **5.0 / 11.1%** |
+| closure, DigiFace held-out (synthetic) | **6.2 / 11.8%** | 7.5 / 16.2% | 6.3 / 11.9% |
+| identity ratio | 1.15 | 1.14 | **1.16** |
+| recognisability, 61 held-out NoW subjects | — | 0.479 | **0.489** |
+| identity corpus | DigiFace | CelebA | both |
+| licence-clean weights | **yes** | no | no |
+
+`deca_celswap` wins NoW by 0.028 mm. `deca_joint` wins everything that scores
+what a viewer actually sees — expression fidelity on both domains, and
+recognisability. NoW scores a *neutral* mesh, so it is an identity-shape metric
+and blind to expression by construction (`now_predict.py --neutral` zeroes
+expression and pose). For a rigged head, where the neutral mesh is the base and
+blendshapes carry expression, the metrics that favour `deca_joint` are the ones
+aligned with the product.
+
+Seed variance has never been measured. A 0.028 mm gap is below what this setup
+can resolve, so treat the NoW ordering as a tie.
+
+## Inference
+
+```
+SHAPE_CALIBRATION = 0.40      # face3d/encoder.py
+```
+
+Non-negotiable, and not a tuning nicety. The raw prediction (α=1.0) scores
+**1.5485 mm on NoW — worse than emitting the FLAME mean face (1.3554)**.
+Discarding 60% of the predicted shape deviation is the only reason the model
+beats a constant mesh. `predict(calibrate=True)` applies it; anything calling
+`predict()` without it ships an over-confident face.
+
+Crop at **margin 1.6** with MediaPipe landmarks. Every corpus and the NoW eval
+use 1.6, and a mismatch is a distribution shift that has bitten this project
+before (eval cam scale 9.2 against train 6.9).
+
+## What it does well, and what it does not
+
+Works: pose and camera (holds through ±40° yaw and on profile inputs),
+albedo and skin tone, expression and the eyelid/lip terms, alignment tight
+enough that a render composites seamlessly into the source photograph.
+
+Weak: **identity shape.** Measured over 200 faces, the shipped output sits
+2.18 mm from the mean face while two different people's outputs differ by only
+1.79 mm — against a ground-truth error of 1.24 mm, so signal is ~1.4x noise.
+Rendered as neutral geometry, a toddler and an elderly woman come out visibly
+similar (`out/mean_face_check.png`).
+
+Context, not excuse: NoW's mean-face baseline is 1.3554 and the best published
+method (MICA) reaches ~0.90, so the achievable band is ~0.45 mm wide. This
+pipeline holds roughly 43% of the distance to DECA's 1.09. Monocular identity
+shape is genuinely underdetermined.
+
+Cannot represent: eyewear, facial hair, hair, tongue, ears in detail. FLAME has
+no basis for them.
+
+## Input quality dominates everything
+
+Measured on three photographs of one person:
+
+| input | recognisability | geometry gain over mean face |
+|---|---|---|
+| studio portrait, white bg, no glasses, 700px | **0.715** | +0.226 |
+| outdoor, harsh side light, 400px | 0.529 | +0.159 |
+| glasses, banner overlay, 400px | 0.396 | +0.107 |
+
+Population average over 61 held-out subjects is 0.489. **The spread between a
+good and a bad photograph of the same person is larger than the spread between
+any two models trained in this project.** A capture guide — face the camera,
+even lighting, no glasses, plain background, fill the frame — is worth more
+than further training.
+
+Averaging shape across multiple photographs does **not** help (0.525 → 0.477).
+Per-image error is systematic bias, not independent noise, so averaging mixes
+biases in rather than cancelling them. Pick the best photograph instead.
+
+## Licensing
+
+The chokepoint is training data, not the encoder. Weights are our copyright;
+what constrains them is what they were trained on.
+
+| corpus | terms | trained models redistributable |
+|---|---|---|
+| DigiFace-1M | R-UDA v1.0 | **yes, explicitly** |
+| FFHQ (permissive subset) | CC BY / PD / CC0 | yes |
+| CelebA | non-commercial, no redistribution of "derived data" | **no** |
+| FLAME 2023 Open | CC-BY-4.0 | yes, with attribution |
+
+`deca_full` uses DigiFace + FFHQ only and is clean. `deca_joint` and
+`deca_celswap` both use CelebA, whose agreement forbids exploiting "any portion
+of derived data" for commercial purposes — model weights are plausibly derived
+data. This project is non-commercial, so nothing is currently violated, but the
+0.028 mm CelebA buys costs the right to ship the weights commercially.
+
+Not legal advice. Get real advice before any commercial use.
+
+## Reproducing
+
+```bash
+# deca_joint
+python scripts/train.py --identity-data data/digiface \
+  --identity-data2 data/celeba --identity-cache2 landmarks_224_swap.npz \
+  --identity-min-images2 4 --identity2-batch 8 --w-identity2 1.0 \
+  --epochs 3 --batch 8 -k 4 --lr 2e-4 \
+  --w-swap 1.0 --w-id 0.2 --w-eye 1.0 --w-lip 0.5 \
+  --mix-ffhq 1.0 --mix-batch 16 --out runs/deca_joint
+
+# deca_full (licence-clean)
+python scripts/train.py --identity-data data/digiface --epochs 3 --batch 8 -k 4 \
+  --lr 2e-4 --w-swap 1.0 --w-id 0.2 --w-eye 1.0 --w-lip 0.5 \
+  --mix-ffhq 1.0 --mix-batch 16 --out runs/deca_full
+```
+
+Evaluation: `scripts/now_predict.py` + Docker (`face3d.now.run_docker_eval`),
+`scripts/eval_closure.py --data {digiface,celeba}`, `scripts/diag_identity.py`,
+`scripts/render_compare.py`. Export: `scripts/export_head.py --image X
+--checkpoint runs/deca_joint/encoder.pt --out head.glb`.
+
+## Export
+
+GLB carries: 5023 verts, 9976 tris, smooth normals, UVs, an embedded 256×256
+baseColour PNG baked from the predicted albedo, a 5-joint armature
+(root/neck/jaw/eye_left/eye_right), and 21 named morph targets
+(`expr_00`…`expr_19`, `jaw_open`). Head is ~31 cm tall at the origin, Y-up.
+Validator-clean (0 errors, 0 warnings).
+
+## Privacy
+
+Face images are biometric data under GDPR and BIPA. This project's rules: no
+scraping, consent on file for every demo photograph, and licence-register rows
+for every corpus. Anything that accepts uploads should not retain them.
