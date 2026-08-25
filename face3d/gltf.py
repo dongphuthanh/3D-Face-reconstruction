@@ -53,6 +53,18 @@ class _Buffer:
         while len(self.data) % alignment:
             self.data.append(0)
 
+    def add_bytes(self, raw):
+        """Append opaque bytes (an embedded PNG) and return its bufferView index.
+
+        No accessor: glTF images reference a bufferView directly.
+        """
+        self._pad(4)
+        offset = len(self.data)
+        self.data.extend(raw)
+        self.views.append({"buffer": 0, "byteOffset": offset,
+                           "byteLength": len(raw)})
+        return len(self.views) - 1
+
     def add(self, array, comp_type, type_str, target=None, minmax=False):
         """Append an array, return its accessor index."""
         arr = np.ascontiguousarray(array)
@@ -96,12 +108,34 @@ def _top4_influences(weights):
     return idx.astype(np.uint16), w.astype(np.float32)
 
 
+def vertex_normals(verts, faces):
+    """(V,3) smooth normals, area-weighted by the cross product magnitude.
+
+    Without a NORMAL attribute glTF requires the viewer to compute FLAT
+    per-face normals, so a 9,976-triangle head renders visibly faceted. Supply
+    them.
+    """
+    v = np.asarray(verts, np.float32)
+    f = np.asarray(faces, np.int64)
+    fn = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+    n = np.zeros_like(v)
+    for c in range(3):
+        np.add.at(n, f[:, c], fn)
+    ln = np.linalg.norm(n, axis=1, keepdims=True)
+    return np.divide(n, ln, out=np.zeros_like(n), where=ln > 1e-12).astype(np.float32)
+
+
 def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
-               morph_targets=None, morph_names=None, uv=None, name="face"):
+               morph_targets=None, morph_names=None, uv=None, name="face",
+               texture_png=None, normals=None):
     """Assemble the glTF JSON and its binary blob.
 
     verts (V,3), faces (F,3), joints (J,3) rest positions, parents (J,),
     skin_weights (V,J), morph_targets (M,V,3) as position DELTAS from verts.
+
+    texture_png: raw PNG bytes for the baseColour map, embedded in the binary
+    chunk so the GLB stays a single self-contained file. Requires `uv`.
+    normals: (V,3); computed from the mesh when omitted.
     """
     buf = _Buffer()
     verts = np.asarray(verts, np.float32)
@@ -112,6 +146,11 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     a_idx = buf.add(faces.reshape(-1), UNSIGNED_INT, "SCALAR", target=34963)
     attributes = {"POSITION": a_pos}
 
+    if normals is None:
+        normals = vertex_normals(verts, faces)
+    attributes["NORMAL"] = buf.add(np.asarray(normals, np.float32), FLOAT, "VEC3",
+                                   target=34962)
+
     if uv is not None:
         attributes["TEXCOORD_0"] = buf.add(np.asarray(uv, np.float32), FLOAT, "VEC2",
                                            target=34962)
@@ -121,6 +160,30 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     attributes["WEIGHTS_0"] = buf.add(jw, FLOAT, "VEC4", target=34962)
 
     primitive = {"attributes": attributes, "indices": a_idx, "mode": 4}
+
+    materials, images, textures, samplers = [], [], [], []
+    if texture_png is not None:
+        if uv is None:
+            raise ValueError("texture_png needs uv; without TEXCOORD_0 a "
+                             "baseColorTexture has nothing to sample against")
+        images.append({"bufferView": buf.add_bytes(texture_png),
+                       "mimeType": "image/png", "name": "albedo"})
+        # 9729/9987 = LINEAR / LINEAR_MIPMAP_LINEAR, 10497 = REPEAT
+        samplers.append({"magFilter": 9729, "minFilter": 9987,
+                         "wrapS": 10497, "wrapT": 10497})
+        textures.append({"sampler": 0, "source": 0})
+        # Skin is dielectric: metallic 0. Roughness high so the SH-lit albedo
+        # is not given a specular sheen it was never estimated with.
+        materials.append({
+            "name": "skin",
+            "pbrMetallicRoughness": {
+                "baseColorTexture": {"index": 0},
+                "metallicFactor": 0.0,
+                "roughnessFactor": 0.85,
+            },
+            "doubleSided": False,
+        })
+        primitive["material"] = 0
 
     if morph_targets is not None and len(morph_targets):
         targets, weights0 = [], []
@@ -170,6 +233,12 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
         "bufferViews": buf.views,
         "buffers": [{"byteLength": len(buf.data)}],
     }
+    # Omitted entirely rather than left empty: the validator flags empty arrays.
+    if materials:
+        gltf["materials"] = materials
+        gltf["images"] = images
+        gltf["textures"] = textures
+        gltf["samplers"] = samplers
     return gltf, bytes(buf.data)
 
 

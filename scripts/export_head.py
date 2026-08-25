@@ -77,8 +77,12 @@ def main():
             # the measured optimum scales its shape output down.
             p = enc.predict(x.float().to(DEV) / 255.0, calibrate=True)
         shape = p.shape[0].cpu().numpy()
+        albedo = p.albedo[0].detach()
         print(f"encoded {a.image}")
     else:
+        # The mean face gets the mean albedo, i.e. zero coefficients, rather
+        # than no texture at all -- a grey head is not a useful default.
+        albedo = torch.zeros(50)
         print("no --image: exporting the FLAME mean face")
 
     deltas, names, neutral = expression_targets(flame, shape, n_targets=a.targets)
@@ -94,12 +98,33 @@ def main():
         f = flame.faces.cpu().numpy()
         for corner in range(3):                    # first writer wins per vertex
             uv[f[:, corner]] = vt[ft[:, corner]]
+        # OBJ puts v=0 at the bottom of the image, glTF at the top.
+        uv[:, 1] = 1.0 - uv[:, 1]
+
+    # Bake the predicted albedo into the UV map the mesh already carries.
+    # Without this the GLB is geometry only: correct, riggable, and grey.
+    tex_png = None
+    if uv is not None and albedo is not None:
+        from io import BytesIO
+
+        from PIL import Image
+
+        from face3d.albedo import CACHE_DIR as TEX_CACHE, FlameTexture
+        cache = TEX_CACHE / "flame_texture_256_50.npz"
+        if cache.exists():
+            ft_tex = FlameTexture(cache, device=DEV)
+            with torch.no_grad():
+                t = ft_tex.texture(albedo[None].to(DEV))[0]        # (3,H,W)
+            img = (t.permute(1, 2, 0).clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+            b = BytesIO()
+            Image.fromarray(img).save(b, format="PNG")
+            tex_png = b.getvalue()
 
     gltf, blob = build_gltf(
         verts=neutral, faces=flame.faces.cpu().numpy(), joints=joints,
         parents=flame.parents, skin_weights=flame.weights.cpu().numpy(),
         joint_names=JOINT_NAMES, morph_targets=deltas, morph_names=names,
-        uv=uv, name="face3d_head")
+        uv=uv, name="face3d_head", texture_png=tex_png)
 
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
