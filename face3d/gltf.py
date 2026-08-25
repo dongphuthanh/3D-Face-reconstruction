@@ -242,8 +242,13 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     return gltf, bytes(buf.data)
 
 
-def write_glb(path, gltf, blob):
-    """Write a binary glTF. Both chunks pad to 4 bytes, as the spec requires."""
+def glb_bytes(gltf, blob):
+    """Serialise a binary glTF to bytes. Both chunks pad to 4, as the spec says.
+
+    Separate from write_glb because a server must be able to produce a GLB
+    without touching the filesystem: uploaded faces are biometric data and the
+    less that reaches disk the better.
+    """
     gltf = dict(gltf)
     gltf["buffers"] = [{"byteLength": len(blob)}]
     js = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
@@ -251,12 +256,17 @@ def write_glb(path, gltf, blob):
     bin_pad = blob + b"\x00" * ((4 - len(blob) % 4) % 4)
 
     total = 12 + 8 + len(js) + 8 + len(bin_pad)
+    return b"".join([
+        struct.pack("<III", GLB_MAGIC, 2, total),
+        struct.pack("<II", len(js), CHUNK_JSON), js,
+        struct.pack("<II", len(bin_pad), CHUNK_BIN), bin_pad,
+    ])
+
+
+def write_glb(path, gltf, blob):
+    """Write a binary glTF."""
     with open(path, "wb") as f:
-        f.write(struct.pack("<III", GLB_MAGIC, 2, total))
-        f.write(struct.pack("<II", len(js), CHUNK_JSON))
-        f.write(js)
-        f.write(struct.pack("<II", len(bin_pad), CHUNK_BIN))
-        f.write(bin_pad)
+        f.write(glb_bytes(gltf, blob))
     return path
 
 
