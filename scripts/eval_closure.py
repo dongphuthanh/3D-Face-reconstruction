@@ -30,9 +30,9 @@ expression fidelity.
 ALWAYS SCORE A MODEL ON ITS OWN DOMAIN, or state that you did not. The held-out
 corpus is a choice, and it decides the answer:
 
-    held-out set          deca_full      deca_celswap
-    CelebA, real photos   6.2 / 13.4%    5.2 / 12.2%
-    DigiFace, synthetic   6.2 / 11.8%    7.5 / 16.2%
+    held-out set          deca_full     deca_celswap   deca_joint
+    CelebA, real photos   6.2 / 13.4%   5.2 / 12.2%    5.0 / 11.1%
+    DigiFace, synthetic   6.2 / 11.8%   7.5 / 16.2%    6.3 / 11.9%
 
 Each model wins on the corpus it trained on, and the gap is large enough to
 invert the conclusion. Reading only the DigiFace row says deca_celswap loses

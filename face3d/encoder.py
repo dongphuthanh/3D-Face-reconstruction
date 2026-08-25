@@ -31,6 +31,7 @@ from .params import FlameParams
 #   deca_jit  1.3554      - 1.2842      - 1.2654 1.2654 1.2772 1.3032      -      -
 #   deca_cel  1.3554      - 1.2995      - 1.2870 1.2910 1.3091 1.3426      -      -
 #   deca_csw  1.3554      - 1.2690      - 1.2457 1.2408 1.2540 1.2851      -      -
+#   deca_jnt  1.3554      - 1.2878      - 1.2697 1.2688 1.2815 1.3060      -      -
 #
 # The optimum ran 0.25 -> 0.50 -> 0.60 while data and loss weighting improved,
 # and it was tempting to read that as progress toward needing no scaling at
@@ -104,7 +105,30 @@ from .params import FlameParams
 # The asymmetry is still worth knowing: deca_full degrades gently off-domain
 # (6.2/11.8 -> 6.2/13.4) where deca_csw degrades sharply (5.2/12.2 -> 7.5/16.2),
 # so DigiFace teaches a more transferable eyelid and lip model even though it is
-# worse in absolute terms on real faces. A joint corpus is the obvious next try.
+# worse in absolute terms on real faces.
+#
+# deca_jnt trains on both, each at batch 8 for 38,937 steps -- the exposure each
+# had in its own run. The two metrics then disagree, and the disagreement is the
+# finding:
+#
+#     model      NoW    closure CelebA   closure DigiFace   ratio
+#     deca_full  1.2679   6.2 / 13.4%      6.2 / 11.8%      1.15
+#     deca_csw   1.2408   5.2 / 12.2%      7.5 / 16.2%      1.14
+#     deca_jnt   1.2688   5.0 / 11.1%      6.3 / 11.9%      1.16
+#
+# Joint training wins closure on BOTH domains -- best on real faces, matching
+# deca_full on synthetic, so the transferability deca_csw lost is fully
+# recovered. But its NoW lands at 1.2688, back at deca_full's level and 0.028
+# above deca_csw. Adding DigiFace back bought expression fidelity and gave up
+# the identity-shape gain that CelebA alone produced. The spreads say the same:
+# between-subject 4.638 sits between deca_full's 4.466 and deca_csw's 4.842.
+#
+# So there is no single winner. NoW scores a NEUTRAL mesh, i.e. identity shape;
+# closure scores expression. deca_csw is the better identity model and deca_jnt
+# the better expression model. For a rigged head the neutral mesh is the base
+# and the blendshapes carry expression, so this is a real product decision, not
+# a metric artefact. Seed variance is still unmeasured, which is what would say
+# whether 0.028 mm is worth choosing on at all.
 #
 # 36 passes over 8,557 subjects did not overfit: val flattened at 0.2106,
 # 0.2108, 0.2108 across the last three epochs and never rose.
