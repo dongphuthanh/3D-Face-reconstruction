@@ -87,21 +87,46 @@ biases in rather than cancelling them. Pick the best photograph instead.
 
 ## Licensing
 
-The chokepoint is training data, not the encoder. Weights are our copyright;
-what constrains them is what they were trained on.
+Weights are our copyright; what constrains them is what they were built from —
+and that includes the FLAME basis, not just the image corpora.
 
-| corpus | terms | trained models redistributable |
+| asset | terms | trained models redistributable |
 |---|---|---|
+| **FLAME 2020** | non-commercial research | **no** |
+| FLAME 2023 Open | CC-BY-4.0 | yes, with attribution |
 | DigiFace-1M | R-UDA v1.0 | **yes, explicitly** |
 | FFHQ (permissive subset) | CC BY / PD / CC0 | yes |
 | CelebA | non-commercial, no redistribution of "derived data" | **no** |
-| FLAME 2023 Open | CC-BY-4.0 | yes, with attribution |
 
-`deca_full` uses DigiFace + FFHQ only and is clean. `deca_joint` and
-`deca_celswap` both use CelebA, whose agreement forbids exploiting "any portion
-of derived data" for commercial purposes — model weights are plausibly derived
-data. This project is non-commercial, so nothing is currently violated, but the
-0.028 mm CelebA buys costs the right to ship the weights commercially.
+**No current checkpoint is licence-clean, `deca_full` included.** Every run was
+trained against `FLAME2020/generic_model.pkl`. `face3d/assets.py` lists FLAME
+2020 first in `CANDIDATES`, so it wins over the `FLAME2023Open` copy sitting
+beside it, silently. Every GLB this project has exported is FLAME 2020 geometry.
+
+Separately, `deca_joint` and `deca_celswap` use CelebA, whose agreement forbids
+exploiting "any portion of derived data" commercially. `deca_full` avoids that
+one — DigiFace + FFHQ only — so it is the *corpus*-clean option, but the FLAME
+2020 dependency binds it equally.
+
+Getting to genuinely clean weights means retraining against FLAME 2023 Open:
+
+```bash
+FACE3D_MODEL=FLAME2023Open/flame2023_Open.pkl python scripts/train.py ...
+```
+
+An existing checkpoint cannot simply be repointed. The two bases share topology
+(5023 verts, 9976 faces, byte-identical `faces`) and are equally expressive —
+first 100 components hold 99.20% of shape variance in 2020 against 98.87% in
+2023 Open, and 2023 Open's leading component is slightly *larger* (3.815 mm
+against 3.585 mm at 1σ). But their axes are rotated relative to each other:
+expressing either basis's top-100 directions in the other's span retains 81% of
+the energy, in both directions. The coefficients mean different things, so a
+2020-trained encoder emits nonsense through a 2023 basis.
+
+The good news is that accuracy is not the cost — 2023 Open is not the weaker
+basis. The cost is one retraining run.
+
+This project is non-commercial, so nothing is currently violated.
 
 Not legal advice. Get real advice before any commercial use.
 
