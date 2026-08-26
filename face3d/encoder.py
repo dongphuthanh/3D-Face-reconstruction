@@ -152,10 +152,15 @@ from .params import FlameParams
 # Rendered side by side (out/mean_face_check.png), a toddler, a boy, an elderly
 # woman and an adult man produce visibly near-identical neutral geometry.
 #
-# The fair context, which is not an excuse but is real: NoW's mean-face baseline
-# is 1.3554 and DECA reports ~1.09, so the entire achievable band is ~0.27 mm
-# wide. At 1.2408 this pipeline has taken ~43% of it. Monocular identity shape
-# is genuinely hard and everyone's numbers sit close to the constant baseline.
+# The fair context, which is not an excuse but is real. On NoW's NON-METRICAL
+# protocol -- the one run_docker_eval runs, and the one every number in this
+# file is on -- the mean face scores 1.3554, DECA 1.09, and MICA 0.98, the best
+# published. So the entire achievable band is ~0.375 mm and this pipeline has
+# taken ~31% of it, or ~43% of the way to DECA. Monocular identity shape is
+# genuinely hard and every published number sits near the constant baseline.
+#
+# Do not mix in MICA's headline 1.08: that is the METRICAL leaderboard, a
+# different and harder protocol that forbids scale optimisation.
 #
 # What this does NOT indict: expression (closure 5.0/11.1% on real faces),
 # pose and camera (the overlay composites seamlessly), and albedo (skin tone is

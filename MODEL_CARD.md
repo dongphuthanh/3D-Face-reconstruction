@@ -57,10 +57,31 @@ Weak: **identity shape.** Measured over 200 faces, the shipped output sits
 Rendered as neutral geometry, a toddler and an elderly woman come out visibly
 similar (`out/mean_face_check.png`).
 
-Context, not excuse: NoW's mean-face baseline is 1.3554 and the best published
-method (MICA) reaches ~0.90, so the achievable band is ~0.45 mm wide. This
-pipeline holds roughly 43% of the distance to DECA's 1.09. Monocular identity
-shape is genuinely underdetermined.
+Context, not excuse. All figures below are the NoW **non-metrical**
+(scale-invariant) protocol, which is what `face3d.now.run_docker_eval` runs —
+`compute_error.py` defaults to `metrical_eval=False` and we never pass
+`--metrical_evaluation`. Mixing the two leaderboards is an easy way to quote a
+number that means something else.
+
+| | NoW non-metrical median |
+|---|---|
+| FLAME mean face (ignores the photo) | 1.3554 |
+| **this pipeline** | **1.2408** |
+| DECA | 1.09 |
+| MICA (best published) | 0.98 |
+
+The whole achievable band is therefore ~0.375 mm wide. This pipeline has taken
+~31% of it, or ~43% of the distance to DECA. Monocular identity shape is
+genuinely underdetermined and every published number sits close to the constant
+baseline.
+
+MICA's 0.98 comes from **2,315 subjects with real 3D scan supervision**
+(LYHM 1211, FRGC 531, FaceWarehouse 150, Stirling 133, BP4D+ 127, BU-3DFE 100,
+Florence 53, D3DFACS 10), against DECA's ~2M images with none. Three orders of
+magnitude less data, a better result. That is the strongest available evidence
+that the bottleneck here is the *kind* of supervision, not its quantity — and
+it is consistent with six corpus experiments in this project all landing inside
+1.24–1.29.
 
 Cannot represent: eyewear, facial hair, hair, tongue, ears in detail. FLAME has
 no basis for them.
