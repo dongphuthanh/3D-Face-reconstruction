@@ -65,6 +65,13 @@ data/_hfcache/
 # ---------------------------------------------------------------------------
 out/
 *.obj
+# Exported heads, anywhere. A GLB carries FLAME's template and topology, and
+# every checkpoint so far was trained against FLAME 2020, whose licence forbids
+# redistribution. Committing one to a public repo is the thing that licence is
+# about. Safe to commit only once the pipeline is retrained on FLAME 2023 Open
+# (CC-BY-4.0, attribution required).
+*.glb
+*.gltf
 runs/
 checkpoints/
 *.log
