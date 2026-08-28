@@ -127,7 +127,7 @@ def vertex_normals(verts, faces):
 
 def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
                morph_targets=None, morph_names=None, uv=None, name="face",
-               texture_png=None, normals=None):
+               texture_png=None, normals=None, eye_mask=None):
     """Assemble the glTF JSON and its binary blob.
 
     verts (V,3), faces (F,3), joints (J,3) rest positions, parents (J,),
@@ -136,6 +136,9 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     texture_png: raw PNG bytes for the baseColour map, embedded in the binary
     chunk so the GLB stays a single self-contained file. Requires `uv`.
     normals: (V,3); computed from the mesh when omitted.
+    eye_mask: (F,) bool, True for eyeball triangles. When given, the mesh is
+    emitted as TWO primitives so the eyes can carry their own material -- skin
+    is matte, eyes are wet and glossy, and one roughness cannot serve both.
     """
     buf = _Buffer()
     verts = np.asarray(verts, np.float32)
@@ -143,7 +146,6 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     joints = np.asarray(joints, np.float32)
 
     a_pos = buf.add(verts, FLOAT, "VEC3", target=34962, minmax=True)
-    a_idx = buf.add(faces.reshape(-1), UNSIGNED_INT, "SCALAR", target=34963)
     attributes = {"POSITION": a_pos}
 
     if normals is None:
@@ -159,7 +161,15 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     attributes["JOINTS_0"] = buf.add(ji, UNSIGNED_SHORT, "VEC4", target=34962)
     attributes["WEIGHTS_0"] = buf.add(jw, FLOAT, "VEC4", target=34962)
 
-    primitive = {"attributes": attributes, "indices": a_idx, "mode": 4}
+    # One index buffer, or two when the eyes are split out. Both primitives
+    # reference the SAME vertex accessors -- only the indices and the material
+    # differ -- so splitting costs one extra index buffer, not a second copy of
+    # the mesh.
+    if eye_mask is None:
+        groups = [("skin", faces)]
+    else:
+        eye_mask = np.asarray(eye_mask, bool)
+        groups = [("skin", faces[~eye_mask]), ("eyes", faces[eye_mask])]
 
     materials, images, textures, samplers = [], [], [], []
     if texture_png is not None:
@@ -183,15 +193,45 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
             },
             "doubleSided": False,
         })
-        primitive["material"] = 0
+        if eye_mask is not None:
+            # Eyes are wet. A low roughness gives them the sharp catchlight that
+            # a matte sphere cannot produce, and its absence is a large part of
+            # why CG eyes read as dead. Same texture and UVs -- only the surface
+            # response differs.
+            materials.append({
+                "name": "eyes",
+                "pbrMetallicRoughness": {
+                    "baseColorTexture": {"index": 0},
+                    "metallicFactor": 0.0,
+                    "roughnessFactor": 0.15,
+                },
+                "doubleSided": False,
+            })
 
+    # Morph targets are declared per primitive, but both primitives can point at
+    # the same accessors. The spec requires every primitive in a mesh to carry
+    # the same NUMBER of targets, and mesh.weights drives all of them together.
+    targets, weights0 = None, None
     if morph_targets is not None and len(morph_targets):
         targets, weights0 = [], []
         for d in np.asarray(morph_targets, np.float32):
             targets.append({"POSITION": buf.add(d, FLOAT, "VEC3", target=34962,
                                                 minmax=True)})
             weights0.append(0.0)
-        primitive["targets"] = targets
+
+    primitives = []
+    for i, (gname, gfaces) in enumerate(groups):
+        prim = {
+            "attributes": attributes,
+            "indices": buf.add(np.ascontiguousarray(gfaces).reshape(-1),
+                               UNSIGNED_INT, "SCALAR", target=34963),
+            "mode": 4,
+        }
+        if materials:
+            prim["material"] = min(i, len(materials) - 1)
+        if targets is not None:
+            prim["targets"] = targets
+        primitives.append(prim)
 
     # Inverse bind matrices: rest joints carry no rotation, so each is a pure
     # translation by -joint_position, written column-major as glTF requires.
@@ -215,7 +255,7 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     root_joints = [joint_node_ids[j] for j, par in enumerate(parents) if par < 0]
     scene_nodes = [0] + root_joints
 
-    mesh = {"name": name, "primitives": [primitive]}
+    mesh = {"name": name, "primitives": primitives}
     if morph_targets is not None and len(morph_targets):
         mesh["weights"] = weights0
         if morph_names:

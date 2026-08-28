@@ -15,6 +15,7 @@ import torch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d import assets
 from face3d.encoder import ResNetEncoder
+from face3d.facemask import eye_faces
 from face3d.flame_torch import FlameTorch
 from face3d.gltf import build_gltf, write_glb, write_gltf
 from face3d.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
@@ -138,7 +139,8 @@ def main():
         verts=neutral, faces=flame.faces.cpu().numpy(), joints=joints,
         parents=flame.parents, skin_weights=flame.weights.cpu().numpy(),
         joint_names=JOINT_NAMES, morph_targets=deltas, morph_names=names,
-        uv=uv, name="face3d_head", texture_png=tex_png)
+        uv=uv, name="face3d_head", texture_png=tex_png,
+        eye_mask=eye_faces(flame).cpu().numpy())
 
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -28,6 +28,7 @@ from face3d import assets
 from face3d.albedo import CACHE_DIR, FlameTexture, face_texel_mask, harmonise
 from face3d.detect import FaceDetector, crop_square
 from face3d.encoder import ResNetEncoder
+from face3d.facemask import eye_faces
 from face3d.flame_torch import FlameTorch
 from face3d.gltf import build_gltf, glb_bytes
 from face3d.landmarks import LandmarkEmbedding
@@ -109,6 +110,10 @@ class Reconstructor:
         # requests would otherwise call detect() on one object at the same time.
         # threading.local() gives each thread its own; ingest_ffhq.py needed the
         # same fix for the same reason.
+        # Eyeball triangles, so they can be exported as their own primitive
+        # with a glossy material. Depends only on FLAME, so compute it once.
+        self.eye_mask = eye_faces(self.flame).cpu().numpy()
+
         self._local = threading.local()
 
     def _detector(self):
@@ -274,5 +279,8 @@ class Reconstructor:
             uv=self.uv,
             name="face3d_head",
             texture_png=tex_png,
+            # Split the eyeballs into their own primitive so they can be wet
+            # and glossy while the skin stays matte.
+            eye_mask=self.eye_mask,
         )
         return glb_bytes(gltf, blob)

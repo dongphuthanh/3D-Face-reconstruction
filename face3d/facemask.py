@@ -20,6 +20,8 @@ little genuine cheek is not.
 import numpy as np
 import torch
 
+from .rig import JOINT_NAMES
+
 
 def face_region(flame, embedding, radius=0.045, front_normal=0.0):
     """Boolean (V,) mask over FLAME vertices: True for face skin.
@@ -52,3 +54,24 @@ def render_mask(fid, face_keep):
     mesh, so clamp before indexing and re-apply the background."""
     hit = fid >= 0
     return hit & face_keep[fid.clamp(min=0)]
+
+
+def eye_faces(flame, threshold=0.5):
+    """(F,) bool mask, True for eyeball triangles.
+
+    FLAME binds the eyeballs to their own joints, so the skinning weights
+    separate them cleanly: 2,176 all-eye triangles, 7,800 all-skin, and zero
+    mixed. That clean split is what lets the eyes become their own glTF
+    primitive with their own material.
+
+    Worth splitting because skin and eyes want opposite surface responses. Skin
+    is matte; eyes are wet and need a sharp catchlight, and a single roughness
+    value cannot serve both. The missing highlight is a large part of why CG
+    eyes look dead.
+    """
+    names = [n.lower() for n in JOINT_NAMES]
+    eye_j = [i for i, n in enumerate(names) if "eye" in n]
+    if not eye_j:
+        return torch.zeros(flame.n_faces, dtype=torch.bool)
+    w = flame.weights[:, eye_j].sum(1)          # (V,)
+    return (w > threshold)[flame.faces].all(-1)
