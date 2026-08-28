@@ -172,6 +172,15 @@ from .params import FlameParams
 # scripts/now_predict.py --shape-scale after any training change; it is
 # specific to a checkpoint and carrying an old value to a new one silently
 # mis-scales every exported face.
+# Sclera is anatomy, not identity: it yellows with age and reddens when
+# irritated, but nobody has brown whites. Predicting it freely let the
+# photometric loss drive it to a mid-brown within one epoch, because at 20x10
+# pixels the eye region is mostly eyelid and lash, so a darker eyeball lowers
+# pixel error while ceasing to look like an eye. Iris stays free -- that is the
+# identity signal the generator exists to capture.
+SCLERA_BASE = torch.tensor([0.88, 0.85, 0.82])
+SCLERA_RANGE = 0.09
+
 SHAPE_CALIBRATION = 0.40   # deca_id, deca_full, deca_jit; was 0.60 for deca_conf
 
 
@@ -235,8 +244,10 @@ class ResNetEncoder(nn.Module, Encoder):
             # pre-sigmoid. Starting at 0 would give a black iris and a mid-grey
             # sclera, and the first renders would look eyeless.
             e = self.n_out - 6
+            # Iris: pre-sigmoid values giving a mid-brown [0.32, 0.22, 0.14].
             self.head.bias[e + 0 : e + 3] = torch.tensor([-0.75, -1.27, -1.82])
-            self.head.bias[e + 3 : e + 6] = torch.tensor([1.99, 1.73, 1.52])
+            # Sclera: zero, because tanh(0) = 0 puts it exactly on SCLERA_BASE.
+            self.head.bias[e + 3 : e + 6] = 0.0
 
     # ImageNet statistics; the trunk expects them whether or not it is pretrained
     MEAN = (0.485, 0.456, 0.406)
@@ -295,7 +306,25 @@ class ResNetEncoder(nn.Module, Encoder):
         # Sigmoid because these are colours: an unbounded linear output would
         # let the encoder ask for negative or super-white pigment, which the
         # photometric loss cannot punish once it clips.
-        eye = torch.sigmoid(take(6))
+        #
+        # IRIS is free across the full range -- eye colour is exactly the
+        # identity signal this is here to capture, and it varies enormously.
+        #
+        # SCLERA is clamped to a narrow band around white, and that is not
+        # timidity. Left free it COLLAPSED: measured after one epoch it had
+        # drifted from [0.88 0.85 0.82] to [0.47 0.34 0.29], a mid-brown, i.e.
+        # the model painting the whites of the eyes skin-coloured. The cause is
+        # the loss, not the parameterisation -- at 20x10 pixels the eye region
+        # is mostly eyelid, lash and shadow, so a darker eyeball genuinely
+        # lowers pixel error even though it stops looking like an eye.
+        #
+        # Anatomy is the right prior here. Human sclera really is near-constant:
+        # it yellows with age and reddens when irritated, but nobody has brown
+        # whites. +/-0.09 covers the real variation and forecloses the collapse.
+        raw = take(6)
+        iris = torch.sigmoid(raw[:, :3])
+        sclera = SCLERA_BASE.to(raw.device) + SCLERA_RANGE * torch.tanh(raw[:, 3:])
+        eye = torch.cat([iris, sclera.clamp(0.0, 1.0)], dim=1)
 
         # Expand the 6 predicted values into FLAME's 15-value pose vector:
         # global rotation and jaw are driven, neck and both eyes stay at rest.
