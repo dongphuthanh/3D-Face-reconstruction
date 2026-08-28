@@ -421,7 +421,10 @@ def main():
               f"val {vagg[0]:.4f} (lmk {vagg[1]:.4f} pho {vagg[2]:.4f})   "
               f"{time.time() - t0:.0f}s", flush=True)
 
-        torch.save({"model": enc.state_dict(), "epoch": ep, "args": vars(a)},
+        # Record WHICH FLAME this was trained against. Without it a checkpoint
+        # is ambiguous, and pairing it with the wrong basis fails silently.
+        torch.save({"model": enc.state_dict(), "epoch": ep, "args": vars(a),
+                    "flame": str(assets.model_path())},
                    out / "encoder.pt")
         (out / "history.json").write_text(json.dumps(hist, indent=1))
 

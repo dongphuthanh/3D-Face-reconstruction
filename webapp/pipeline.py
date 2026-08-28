@@ -56,19 +56,42 @@ class Reconstructor:
     constructs this per request is 100x slower than it needs to be, and that is
     the most common mistake in ML web services.
 
-    deca_full is the default rather than deca_joint because it is the
-    corpus-clean checkpoint (DigiFace + FFHQ, no CelebA). It costs 0.028 mm on
-    NoW, which is below what the benchmark can resolve.
+    deca_open is the default: the only licence-clean checkpoint (FLAME 2023
+    Open + DigiFace + FFHQ, no CelebA, no FLAME 2020), the only one whose
+    exported meshes may be redistributed, and the only one with predicted eye
+    colour. It gives up nothing measurable to be all three.
+
+    THE CHECKPOINT AND THE FLAME BASIS MUST MATCH, and nothing enforces that
+    automatically. face3d/assets.py resolves FLAME by searching CANDIDATES,
+    which lists FLAME2020 FIRST, so leaving it implicit would silently drive
+    deca_open's weights through the 2020 basis. The two bases share topology and
+    dimensions, so nothing would raise -- but their axes are rotated, retaining
+    only 81% of each other's energy, and the output would be quiet nonsense.
+    Hence flame_model is explicit here rather than inherited from list order.
     """
 
-    def __init__(self, checkpoint=ROOT / "runs" / "deca_full" / "encoder.pt",
-                 device="cpu"):
+    # Matched pair. Change both or neither.
+    CHECKPOINT = ROOT / "runs" / "deca_open" / "encoder.pt"
+    FLAME_MODEL = "FLAME2023Open/flame2023_Open.pkl"
+
+    def __init__(self, checkpoint=None, device="cpu", flame_model=None):
         self.device = device
+        checkpoint = pathlib.Path(checkpoint or self.CHECKPOINT)
+        flame_model = flame_model or self.FLAME_MODEL
 
         # FLAME: the frozen statistical face model. Given (shape, expression,
         # pose) coefficients it produces 5023 vertices. Nothing here is trained
         # -- it is a fixed basis the encoder learns to drive.
-        self.flame = FlameTorch(assets.model_path_or_skip()).to(device)
+        flame_path = assets.model_path(flame_model)
+        if flame_path is None:
+            raise FileNotFoundError(
+                f"FLAME basis {flame_model!r} not found. It must match the "
+                f"checkpoint: {checkpoint.parent.name} was trained on it, and a "
+                f"mismatch produces plausible-looking nonsense rather than an "
+                f"error.")
+        print(f"    FLAME: {flame_path.name}   checkpoint: {checkpoint.parent.name}",
+              flush=True)
+        self.flame = FlameTorch(flame_path).to(device)
 
         # The encoder: ResNet-50 trunk + one linear head emitting 186 numbers
         # (100 shape, 50 expression, 6 pose, 3 camera, 27 light, 50 albedo).
