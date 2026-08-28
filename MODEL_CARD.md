@@ -4,19 +4,27 @@ Photograph → FLAME parameters → rigged glTF head.
 
 ## Which checkpoint to ship
 
-**`runs/deca_joint` for quality. `runs/deca_full` if the weights must be
-licence-clean.** These are not the same answer and the difference is not
-technical — see Licensing.
+**`runs/deca_open` unless you have a reason not to.** It is the only
+licence-clean checkpoint, the only one with predicted eyes, and it gives up
+nothing measurable to do it. `deca_joint` remains marginally ahead on expression
+if the work is non-commercial and stays private.
 
-| | deca_full | deca_celswap | **deca_joint** |
-|---|---|---|---|
-| NoW median (best α) | 1.2679 | **1.2408** | 1.2688 |
-| closure, CelebA held-out (real) | 6.2 / 13.4% | 5.2 / 12.2% | **5.0 / 11.1%** |
-| closure, DigiFace held-out (synthetic) | **6.2 / 11.8%** | 7.5 / 16.2% | 6.3 / 11.9% |
-| identity ratio | 1.15 | 1.14 | **1.16** |
-| recognisability, 61 held-out NoW subjects | — | 0.479 | **0.489** |
-| identity corpus | DigiFace | CelebA | both |
-| licence-clean weights | **yes** | no | no |
+| | deca_full | deca_celswap | deca_joint | **deca_open** |
+|---|---|---|---|---|
+| FLAME basis | 2020 | 2020 | 2020 | **2023 Open** |
+| mean-face baseline | 1.3554 | 1.3554 | 1.3554 | **1.3693** |
+| NoW median (best α) | 1.2679 | 1.2408 | 1.2688 | 1.2798 |
+| **gain over own baseline** | 0.0875 | **0.1146** | 0.0866 | 0.0895 |
+| closure, CelebA held-out (real) | 6.2 / 13.4% | 5.2 / 12.2% | **5.0 / 11.1%** | — |
+| closure, DigiFace held-out | 6.2 / 11.8% | 7.5 / 16.2% | 6.3 / 11.9% | **6.6 / 11.6%** |
+| identity ratio | 1.15 | 1.14 | **1.16** | 1.14 |
+| iris tracks the photo | no | no | no | **r = +0.822** |
+| licence-clean weights | no | no | no | **yes** |
+
+**Compare the gain row, not the median row.** deca_open sits on a different
+basis whose mean face is a different mesh (1.3693 against 1.3554), so its
+median is not commensurable with the others. Against its own baseline it takes
+marginally more of the available distance than deca_full does.
 
 `deca_celswap` wins NoW by 0.028 mm. `deca_joint` wins everything that scores
 what a viewer actually sees — expression fidelity on both domains, and
