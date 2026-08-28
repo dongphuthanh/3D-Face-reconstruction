@@ -97,7 +97,13 @@ class FaceRenderer:
         if albedo is None:
             if self.texture is not None and params.albedo is not None:
                 coeff = params.albedo.detach() if detach_appearance else params.albedo
-                albedo = self.texture.sample(coeff, fid, bary)
+                # Eye colours ride with the albedo, and are detached on the
+                # same terms: the identity loss must not be payable by
+                # repainting an iris.
+                eyes = params.eye
+                if eyes is not None and detach_appearance:
+                    eyes = eyes.detach()
+                albedo = self.texture.sample(coeff, fid, bary, eye=eyes)
             else:
                 albedo = shaded.new_full((1, 1, 1, 3), 0.6)
         return (shaded * albedo * mask.unsqueeze(-1)).clamp(0, 1)

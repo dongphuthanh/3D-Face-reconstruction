@@ -84,12 +84,46 @@ class FlameTexture:
             self.ft = torch.as_tensor(d["ft"]).to(device)              # (F,3)
         self.n_components = self.dirs.shape[-1]
         self.resolution = self.mean.shape[0]
+        self.eye_theta = None      # set by attach_eyes()
+        self.eye_alpha = None
 
-    def texture(self, coef):
-        """(B,N) -> (B,3,H,W) for grid_sample."""
+    def texture(self, coef, eye=None):
+        """(B,N) -> (B,3,H,W) for grid_sample.
+
+        `eye` (B,6) is iris RGB then sclera RGB. When given, a procedurally
+        generated eye replaces the PCA map inside the eyeball discs -- the basis
+        allocates variance by pixel area and leaves the eyes a blurred
+        population-average iris. See face3d/eyes.py.
+        """
         n = min(coef.shape[1], self.n_components)
         tex = self.mean + torch.einsum("hwcn,bn->bhwc", self.dirs[..., :n], coef[:, :n])
-        return tex.permute(0, 3, 1, 2)
+        tex = tex.permute(0, 3, 1, 2)
+        if eye is not None and self.eye_theta is not None:
+            from .eyes import eye_texture
+            gen = eye_texture(eye[:, :3], eye[:, 3:6], self.eye_theta)
+            m = self.eye_alpha                       # (1,1,H,W), soft edged
+            tex = tex * (1 - m) + gen * m
+        return tex
+
+    def attach_eyes(self, flame, vt=None, ft=None, blur=1.0):
+        """Precompute the eye angle map so texture() can composite eyes.
+
+        Kept out of __init__ because it needs the FLAME model, and FlameTexture
+        is also used in contexts that have no mesh.
+        """
+        import numpy as np
+        from PIL import Image, ImageFilter
+
+        from .eyes import eye_theta_map
+        vt = self.vt.cpu().numpy() if vt is None else vt
+        ft = self.ft.cpu().numpy() if ft is None else ft
+        th = eye_theta_map(flame, vt, ft, resolution=self.resolution)
+        self.eye_theta = th
+        # Soft alpha so the disc edge does not alias against the skin around it.
+        a = Image.fromarray(((th >= 0) * 255).astype(np.uint8))
+        a = np.asarray(a.filter(ImageFilter.GaussianBlur(blur))).astype(np.float32) / 255.0
+        self.eye_alpha = torch.as_tensor(a, device=self.mean.device)[None, None]
+        return self
 
     def uv_map(self, fid, bary):
         """Per-pixel UV from the rasteriser output. (B,H,W,2) in [0,1].
@@ -102,12 +136,12 @@ class FlameTexture:
         vt = self.vt.unsqueeze(0).expand(B, -1, -1)
         return interpolate(vt, self.ft, fid, bary)
 
-    def sample(self, coef, fid, bary):
+    def sample(self, coef, fid, bary, eye=None):
         """(B,H,W,3) albedo, sampled from the reconstructed texture."""
         uv = self.uv_map(fid, bary)
         # OBJ UVs put v=0 at the bottom; image row 0 is the top.
         grid = torch.stack([uv[..., 0], 1.0 - uv[..., 1]], -1) * 2 - 1
-        tex = self.texture(coef)
+        tex = self.texture(coef, eye=eye)
         out = F.grid_sample(tex, grid, mode="bilinear", align_corners=False)
         return out.permute(0, 2, 3, 1)
 

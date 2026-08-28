@@ -167,6 +167,10 @@ def main():
         device=DEV)
     tex_cache = CACHE_DIR / "flame_texture_256_50.npz"
     tex = FlameTexture(tex_cache, device=DEV) if tex_cache.exists() else None
+    if tex is not None:
+        # Lets the photometric loss drive iris and sclera colour instead
+        # of every face inheriting the basis mean's blurred brown eye.
+        tex.attach_eyes(flame)
     keep = None
     if a.skin_mask > 0:
         vm = face_region(flame, emb, radius=a.skin_mask)

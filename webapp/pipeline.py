@@ -90,6 +90,8 @@ class Reconstructor:
         # Optional -- without it the GLB is geometry with no material.
         cache = CACHE_DIR / "flame_texture_256_50.npz"
         self.texture = FlameTexture(cache, device=device) if cache.exists() else None
+        if self.texture is not None:
+            self.texture.attach_eyes(self.flame)
         self.uv = self._uv_layout(cache)
 
         # Which UV texels the photometric loss actually optimised. Depends only
@@ -160,7 +162,7 @@ class Reconstructor:
         uv[:, 1] = 1.0 - uv[:, 1]                # OBJ bottom-up -> glTF top-down
         return uv
 
-    def _bake_texture(self, albedo):
+    def _bake_texture(self, albedo, eye=None):
         """50 albedo coefficients -> PNG bytes, entirely in memory.
 
         FlameTexture.texture() evaluates mean + sum(coeff_i * basis_i) to give a
@@ -172,7 +174,8 @@ class Reconstructor:
             return None
         with torch.no_grad():
             # albedo is (50,); texture() wants a batch, hence [None] -> (1,50).
-            tex = self.texture.texture(albedo[None].to(self.device))[0]  # (3,H,W)
+            tex = self.texture.texture(albedo[None].to(self.device),
+                                       eye=eye[None].to(self.device))[0]
 
         # (3,H,W) float [0,1] -> (H,W,3) uint8, which is what PIL expects.
         arr = tex.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
@@ -260,7 +263,7 @@ class Reconstructor:
         joints = rest_joints(self.flame, shape).cpu().numpy()
 
         # --- 8. texture ------------------------------------------------------
-        tex_png = self._bake_texture(p.albedo[0])
+        tex_png = self._bake_texture(p.albedo[0], p.eye[0])
 
         # --- 9. assemble ------------------------------------------------------
         # build_gltf returns (json_dict, binary_blob); glb_bytes packs them into

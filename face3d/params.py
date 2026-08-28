@@ -6,7 +6,7 @@ what lets DECA, SMIRK and MICA sit behind one interface: they disagree about how
 many coefficients they emit, not about what the coefficients mean.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from typing import Optional
 
 import torch
@@ -33,6 +33,10 @@ class FlameParams:
     cam: torch.Tensor
     light: torch.Tensor
     albedo: Optional[torch.Tensor] = None
+    # (B,6): iris RGB then sclera RGB. The eyes get their own two colours
+    # because the 50-component albedo basis allocates variance by pixel area
+    # and leaves them a population-average iris. See face3d/eyes.py.
+    eye: Optional[torch.Tensor] = None
 
     def __post_init__(self):
         b = self.shape.shape[0]
@@ -58,19 +62,31 @@ class FlameParams:
         """Slice along the batch. Needed to render a subset of a batch -- e.g.
         paired-view training, where both views are encoded but only one is
         rasterised, since the render path dominates memory."""
-        f = lambda t: None if t is None else t[idx]
-        return replace(self, shape=f(self.shape), expr=f(self.expr), pose=f(self.pose),
-                       cam=f(self.cam), light=f(self.light), albedo=f(self.albedo))
+        return self._map(lambda t: t[idx])
 
     def to(self, device) -> "FlameParams":
-        f = lambda t: None if t is None else t.to(device)
-        return replace(self, shape=f(self.shape), expr=f(self.expr), pose=f(self.pose),
-                       cam=f(self.cam), light=f(self.light), albedo=f(self.albedo))
+        return self._map(lambda t: t.to(device))
+
+    def _map(self, fn) -> "FlameParams":
+        """Apply fn to every tensor field, skipping None.
+
+        Iterating the dataclass fields rather than naming them: the earlier
+        version listed shape/expr/pose/cam/light/albedo by hand, so adding `eye`
+        silently left it unsliced. Rendering a subset of a paired batch then hit
+        a shape mismatch deep inside the texture compositor, a long way from the
+        line that actually caused it.
+        """
+        return replace(self, **{
+            f.name: fn(v)
+            for f in fields(self)
+            if (v := getattr(self, f.name)) is not None
+        })
 
     def detach(self) -> "FlameParams":
-        f = lambda t: None if t is None else t.detach()
-        return replace(self, shape=f(self.shape), expr=f(self.expr), pose=f(self.pose),
-                       cam=f(self.cam), light=f(self.light), albedo=f(self.albedo))
+        # Same reasoning as _map: naming the fields here would have left `eye`
+        # attached, so a "detached" params object would still have carried
+        # gradient into the eye colours.
+        return self._map(lambda t: t.detach())
 
     def pad_to(self, n_shape: int, n_expr: int) -> "FlameParams":
         """Zero-extend to a full FLAME basis.

@@ -200,7 +200,8 @@ class ResNetEncoder(nn.Module, Encoder):
                  pretrained=False):
         super().__init__()
         self.n_shape, self.n_expr, self.n_albedo = n_shape, n_expr, n_albedo
-        self.n_out = n_shape + n_expr + 6 + 3 + 27 + n_albedo
+        # +6 at the end: iris RGB and sclera RGB, driving face3d/eyes.py
+        self.n_out = n_shape + n_expr + 6 + 3 + 27 + n_albedo + 6
 
         weights = "DEFAULT" if pretrained else None      # pretrained triggers a download
         trunk = getattr(torchvision.models, arch)(weights=weights)
@@ -230,6 +231,12 @@ class ResNetEncoder(nn.Module, Encoder):
             self.head.bias[c + 0] = 5.6                          # cam scale
             self.head.bias[c + 2] = 0.16                         # cam ty
             self.head.bias[c + 3 : c + 6] = 0.7                  # ambient SH, RGB
+            # Eye colours start at a mid-brown iris and a faintly warm sclera,
+            # pre-sigmoid. Starting at 0 would give a black iris and a mid-grey
+            # sclera, and the first renders would look eyeless.
+            e = self.n_out - 6
+            self.head.bias[e + 0 : e + 3] = torch.tensor([-0.75, -1.27, -1.82])
+            self.head.bias[e + 3 : e + 6] = torch.tensor([1.99, 1.73, 1.52])
 
     # ImageNet statistics; the trunk expects them whether or not it is pretrained
     MEAN = (0.485, 0.456, 0.406)
@@ -240,6 +247,31 @@ class ResNetEncoder(nn.Module, Encoder):
         s = image.new_tensor(self.STD).view(1, 3, 1, 1)
         code = self.head(self.trunk((image - m) / s))
         return self._split(code)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Accept checkpoints that predate the eye outputs.
+
+        Adding iris and sclera colour grew the head from 236 to 242, which makes
+        every earlier checkpoint fail a strict load. Rather than orphan them,
+        copy what the checkpoint has and leave the new rows at their initialised
+        values -- so an old model still runs and simply emits the default
+        mid-brown eye. Silently dropping a size mismatch would be worse than
+        either option, so this only ever pads, never truncates.
+        """
+        w = state_dict.get("head.weight")
+        if w is not None and w.shape[0] != self.head.weight.shape[0]:
+            if w.shape[0] > self.head.weight.shape[0]:
+                raise ValueError(
+                    f"checkpoint head is {w.shape[0]} wide but this encoder "
+                    f"emits {self.head.weight.shape[0]}; refusing to truncate")
+            state_dict = dict(state_dict)
+            n = w.shape[0]
+            nw = self.head.weight.detach().clone(); nw[:n] = w
+            nb = self.head.bias.detach().clone(); nb[:n] = state_dict["head.bias"]
+            state_dict["head.weight"], state_dict["head.bias"] = nw, nb
+            print(f"    note: checkpoint predates the eye outputs "
+                  f"({n} -> {self.head.weight.shape[0]}); using default eye colour")
+        return super().load_state_dict(state_dict, strict=strict)
 
     def predict(self, image: torch.Tensor, calibrate: bool = False) -> FlameParams:
         """calibrate=True applies SHAPE_CALIBRATION. Off during training, since
@@ -260,6 +292,10 @@ class ResNetEncoder(nn.Module, Encoder):
         shape, expr = take(self.n_shape), take(self.n_expr)
         rot6 = take(6)
         cam, light, albedo = take(3), take(27), take(self.n_albedo)
+        # Sigmoid because these are colours: an unbounded linear output would
+        # let the encoder ask for negative or super-white pigment, which the
+        # photometric loss cannot punish once it clips.
+        eye = torch.sigmoid(take(6))
 
         # Expand the 6 predicted values into FLAME's 15-value pose vector:
         # global rotation and jaw are driven, neck and both eyes stay at rest.
@@ -267,7 +303,7 @@ class ResNetEncoder(nn.Module, Encoder):
         pose[:, 0:3] = rot6[:, 0:3]
         pose[:, 6:9] = rot6[:, 3:6]
         return FlameParams(shape=shape, expr=expr, pose=pose, cam=cam,
-                           light=light.view(B, 9, 3), albedo=albedo)
+                           light=light.view(B, 9, 3), albedo=albedo, eye=eye)
 
 
 class ArcFaceShapeEncoder(ResNetEncoder):

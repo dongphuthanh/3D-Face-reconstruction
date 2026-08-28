@@ -79,11 +79,15 @@ def main():
             p = enc.predict(x.float().to(DEV) / 255.0, calibrate=True)
         shape = p.shape[0].cpu().numpy()
         albedo = p.albedo[0].detach()
+        eye = p.eye[0].detach()
         print(f"encoded {a.image}")
     else:
         # The mean face gets the mean albedo, i.e. zero coefficients, rather
         # than no texture at all -- a grey head is not a useful default.
         albedo = torch.zeros(50)
+        from face3d.eyes import default_eye_params
+        _i, _s = default_eye_params(1)
+        eye = torch.cat([_i, _s], 1)[0]
         print("no --image: exporting the FLAME mean face")
 
     deltas, names, neutral = expression_targets(flame, shape, n_targets=a.targets)
@@ -115,9 +119,10 @@ def main():
         from face3d.landmarks import LandmarkEmbedding
         cache = TEX_CACHE / "flame_texture_256_50.npz"
         if cache.exists():
-            ft_tex = FlameTexture(cache, device=DEV)
+            ft_tex = FlameTexture(cache, device=DEV).attach_eyes(flame)
             with torch.no_grad():
-                t = ft_tex.texture(albedo[None].to(DEV))[0]        # (3,H,W)
+                t = ft_tex.texture(albedo[None].to(DEV),
+                                   eye=eye[None].to(DEV))[0]       # (3,H,W)
             arr = t.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
 
             # Replace the un-fitted neck and scalp with the fitted face's own
