@@ -25,11 +25,12 @@ from PIL import Image
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 from face3d import assets
-from face3d.albedo import CACHE_DIR, FlameTexture
+from face3d.albedo import CACHE_DIR, FlameTexture, face_texel_mask, harmonise
 from face3d.detect import FaceDetector, crop_square
 from face3d.encoder import ResNetEncoder
 from face3d.flame_torch import FlameTorch
 from face3d.gltf import build_gltf, glb_bytes
+from face3d.landmarks import LandmarkEmbedding
 from face3d.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
 
 # Must match training. Every corpus and the NoW evaluation crop at 1.6, and a
@@ -89,6 +90,19 @@ class Reconstructor:
         cache = CACHE_DIR / "flame_texture_256_50.npz"
         self.texture = FlameTexture(cache, device=device) if cache.exists() else None
         self.uv = self._uv_layout(cache)
+
+        # Which UV texels the photometric loss actually optimised. Depends only
+        # on FLAME and the landmark embedding, so it is built once here rather
+        # than per request. See harmonise() for why it is needed.
+        self.face_mask = None
+        if cache.exists():
+            emb = LandmarkEmbedding(
+                ROOT / "mediapipe_landmark_embedding" /
+                "mediapipe_landmark_embedding.npz", device=device)
+            with np.load(cache) as d:
+                self.face_mask = face_texel_mask(
+                    self.flame, emb, d["vt"].astype(np.float32),
+                    d["ft"].astype(np.int64))
 
         # MediaPipe graphs are stateful and NOT safe to share across threads.
         # FastAPI runs sync handlers in a worker threadpool, so two concurrent
@@ -156,7 +170,15 @@ class Reconstructor:
             tex = self.texture.texture(albedo[None].to(self.device))[0]  # (3,H,W)
 
         # (3,H,W) float [0,1] -> (H,W,3) uint8, which is what PIL expects.
-        arr = (tex.permute(1, 2, 0).clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+        arr = tex.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+
+        # Replace the un-fitted neck and scalp with the fitted face's own tone.
+        # Without this the basis mean shows through at 27% higher saturation
+        # than the subject, and a correct face reads as washed out beside it.
+        if self.face_mask is not None:
+            arr = harmonise(arr, self.face_mask)
+
+        arr = (arr * 255).astype(np.uint8)
         buf = io.BytesIO()
         Image.fromarray(arr).save(buf, format="PNG")
         return buf.getvalue()

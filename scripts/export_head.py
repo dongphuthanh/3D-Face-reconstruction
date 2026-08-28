@@ -109,13 +109,27 @@ def main():
 
         from PIL import Image
 
-        from face3d.albedo import CACHE_DIR as TEX_CACHE, FlameTexture
+        from face3d.albedo import (CACHE_DIR as TEX_CACHE, FlameTexture,
+                                   face_texel_mask, harmonise)
+        from face3d.landmarks import LandmarkEmbedding
         cache = TEX_CACHE / "flame_texture_256_50.npz"
         if cache.exists():
             ft_tex = FlameTexture(cache, device=DEV)
             with torch.no_grad():
                 t = ft_tex.texture(albedo[None].to(DEV))[0]        # (3,H,W)
-            img = (t.permute(1, 2, 0).clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+            arr = t.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+
+            # Replace the un-fitted neck and scalp with the fitted face's own
+            # tone. The basis mean sits 27% more saturated than the subject, and
+            # beside it a correctly fitted face reads as washed out.
+            emb_lm = LandmarkEmbedding(
+                ROOT / "mediapipe_landmark_embedding" /
+                "mediapipe_landmark_embedding.npz", device=DEV)
+            with np.load(cache) as d:
+                m = face_texel_mask(flame, emb_lm, d["vt"].astype(np.float32),
+                                    d["ft"].astype(np.int64))
+            arr = harmonise(arr, m)
+            img = (arr * 255).astype(np.uint8)
             b = BytesIO()
             Image.fromarray(img).save(b, format="PNG")
             tex_png = b.getvalue()

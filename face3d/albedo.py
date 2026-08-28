@@ -112,6 +112,68 @@ class FlameTexture:
         return out.permute(0, 2, 3, 1)
 
 
+def face_texel_mask(flame, embedding, vt, ft, resolution=256, radius=0.045):
+    """(H,W) float mask, 1 where a UV texel belongs to the fitted face region.
+
+    Rasterises the skin-mask triangles into UV space. Depends only on FLAME and
+    the landmark embedding, not on the person, so build it once and reuse it.
+    """
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    from .facemask import face_faces, face_region
+
+    keep = face_faces(flame, face_region(flame, embedding, radius=radius))
+    keep = keep.cpu().numpy()
+    img = Image.new("L", (resolution, resolution), 0)
+    draw = ImageDraw.Draw(img)
+    for tri in np.asarray(ft)[keep]:
+        draw.polygon([(float(vt[i, 0] * resolution),
+                       float((1.0 - vt[i, 1]) * resolution)) for i in tri],
+                     fill=255)
+    return np.asarray(img).astype(np.float32) / 255.0
+
+
+def harmonise(tex, mask, blur=10.0):
+    """Blend the un-fitted region of a baked albedo toward the fitted tone.
+
+    (H,W,3) float in [0,1] -> same. `mask` comes from face_texel_mask().
+
+    Why this is needed. The 50 albedo coefficients drive the WHOLE UV map, but
+    the basis directions carry nearly all their energy in the face, because that
+    is where the training textures vary. Fitting therefore moves the face and
+    leaves the neck and scalp sitting near the basis mean -- a generic
+    over-saturated tone that belongs to nobody.
+
+    Measured on one subject: the source photograph's face has saturation 0.223,
+    the fitted albedo 0.201 (right, and correctly a little flatter since the
+    photo carries shading), and the un-fitted neck 0.282. The neck is 27% more
+    saturated than the actual person, and because the eye judges the face
+    against its neighbour, a CORRECT face reads as washed out. Rendered, the
+    gap widened to 64% -- lighting adds white, and white dilutes saturation.
+
+    So this does not correct the face. It replaces a region nobody optimised
+    with the one skin tone that was actually measured. Nothing is invented: the
+    fill colour is the fitted region's own mean, and the Gaussian falloff keeps
+    the transition seamless rather than trading one hard edge for another.
+
+    The eyeballs survive because they fall INSIDE the skin mask -- worth knowing,
+    since painting them skin-coloured would be far worse than the artifact.
+    """
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    inside = mask > 0.5
+    if not inside.any():
+        return tex
+    target = tex[inside].mean(0)
+
+    soft = Image.fromarray((mask * 255).astype(np.uint8))
+    soft = np.asarray(soft.filter(ImageFilter.GaussianBlur(blur)))
+    soft = (soft.astype(np.float32) / 255.0)[..., None]
+    return tex * soft + target[None, None, :] * (1.0 - soft)
+
+
 def _keys(p):
     import zipfile
     with zipfile.ZipFile(p) as z:
