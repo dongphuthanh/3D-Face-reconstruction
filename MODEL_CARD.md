@@ -119,7 +119,23 @@ and that includes the FLAME basis, not just the image corpora.
 | FFHQ (permissive subset) | CC BY / PD / CC0 | yes |
 | CelebA | non-commercial, no redistribution of "derived data" | **no** |
 
-**No current checkpoint is licence-clean, `deca_full` included.** Every run was
+**`runs/deca_open` is licence-clean.** FLAME 2023 Open (CC-BY-4.0) with
+DigiFace + FFHQ only — no CelebA, no FLAME 2020. It is the model to use for
+anything public, and the only one whose exported meshes may be redistributed
+(with attribution to FLAME).
+
+Its NoW median is 1.2798, which must NOT be read against the table above: the
+mean face is a different mesh, measured at 1.3693 mm against FLAME 2020's
+1.3554. Compare gains — deca_full takes 0.0875 of its baseline, deca_open
+0.0895 of its own, so the clean basis costs nothing. Identity ratio 1.14 and
+closure 6.6 / 11.6% are ties with deca_full. SHAPE_CALIBRATION stays 0.40,
+re-measured rather than assumed.
+
+It is also the only model with predicted eyes: iris colour correlates with the
+photographed iris at r = +0.822 over 80 faces. Every other checkpoint emits the
+albedo basis mean's blurred brown iris for every subject.
+
+**The older checkpoints are not licence-clean, `deca_full` included.** Every run was
 trained against `FLAME2020/generic_model.pkl`. `face3d/assets.py` lists FLAME
 2020 first in `CANDIDATES`, so it wins over the `FLAME2023Open` copy sitting
 beside it, silently. Every GLB this project has exported is FLAME 2020 geometry.

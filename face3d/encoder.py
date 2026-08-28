@@ -32,6 +32,7 @@ from .params import FlameParams
 #   deca_cel  1.3554      - 1.2995      - 1.2870 1.2910 1.3091 1.3426      -      -
 #   deca_csw  1.3554      - 1.2690      - 1.2457 1.2408 1.2540 1.2851 1.3905 1.5485
 #   deca_jnt  1.3554      - 1.2878      - 1.2697 1.2688 1.2815 1.3060      -      -
+#   deca_opn  1.3693      - 1.2842      -      - 1.2798      - 1.3561 1.4916 1.6783
 #
 # The optimum ran 0.25 -> 0.50 -> 0.60 while data and loss weighting improved,
 # and it was tempting to read that as progress toward needing no scaling at
@@ -132,6 +133,25 @@ from .params import FlameParams
 #
 # 36 passes over 8,557 subjects did not overfit: val flattened at 0.2106,
 # 0.2108, 0.2108 across the last three epochs and never rose.
+##
+# deca_opn is the FIRST licence-clean model: FLAME 2023 Open (CC-BY-4.0) with
+# DigiFace + FFHQ only. Its row is NOT comparable to the ones above it, because
+# the mean face is a different mesh -- measured, the FLAME 2023 Open baseline is
+# 1.3693 mm against 2020's 1.3554. Compare gains, not medians:
+#
+#     deca_full  1.3554 -> 1.2679   gain 0.0875
+#     deca_opn   1.3693 -> 1.2798   gain 0.0895
+#
+# So the licence-clean basis costs nothing: it takes marginally MORE of the
+# distance available to it. Identity ratio 1.14 against 1.15 and closure
+# 6.6/11.6% against 6.2/11.8% are both ties. SHAPE_CALIBRATION stays 0.40,
+# which had to be re-measured rather than assumed -- the bases share topology
+# but their axes are rotated, retaining only 81% of each other's energy.
+#
+# It is also the first model whose eyes are predicted rather than inherited.
+# Iris colour correlates with the iris actually in the photograph at r = +0.822
+# over 80 faces (per channel r ~ 0.80), where every earlier model emitted the
+# albedo basis mean's blurred brown blob for everyone. See face3d/eyes.py.
 #
 # HOW CLOSE IS THIS TO JUST EMITTING THE MEAN FACE? Closer than the headline
 # numbers suggest, and the honest framing belongs here rather than in a commit
