@@ -168,7 +168,7 @@ def face_texel_mask(flame, embedding, vt, ft, resolution=256, radius=0.045):
     return np.asarray(img).astype(np.float32) / 255.0
 
 
-def harmonise(tex, mask, blur=10.0):
+def harmonise(tex, mask, blur=10.0, keep=None):
     """Blend the un-fitted region of a baked albedo toward the fitted tone.
 
     (H,W,3) float in [0,1] -> same. `mask` comes from face_texel_mask().
@@ -193,6 +193,12 @@ def harmonise(tex, mask, blur=10.0):
 
     The eyeballs survive because they fall INSIDE the skin mask -- worth knowing,
     since painting them skin-coloured would be far worse than the artifact.
+
+    `keep` protects a region without letting it into the fill colour. The hair
+    shell needs exactly that: it must not be repainted skin (which is what this
+    function did to it the first time hair was wired in -- the shell inflated
+    correctly and then came out the colour of a forehead), but averaging hair
+    into `target` would tint the neck with it.
     """
     import numpy as np
     from PIL import Image, ImageFilter
@@ -202,9 +208,15 @@ def harmonise(tex, mask, blur=10.0):
         return tex
     target = tex[inside].mean(0)
 
-    soft = Image.fromarray((mask * 255).astype(np.uint8))
-    soft = np.asarray(soft.filter(ImageFilter.GaussianBlur(blur)))
-    soft = (soft.astype(np.float32) / 255.0)[..., None]
+    def smooth(m):
+        img = Image.fromarray((np.clip(m, 0, 1) * 255).astype(np.uint8))
+        return np.asarray(img.filter(ImageFilter.GaussianBlur(blur))
+                          ).astype(np.float32) / 255.0
+
+    soft = smooth(mask)
+    if keep is not None:
+        soft = np.maximum(soft, smooth(keep))
+    soft = soft[..., None]
     return tex * soft + target[None, None, :] * (1.0 - soft)
 
 

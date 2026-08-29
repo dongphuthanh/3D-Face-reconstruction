@@ -127,7 +127,7 @@ def vertex_normals(verts, faces):
 
 def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
                morph_targets=None, morph_names=None, uv=None, name="face",
-               texture_png=None, normals=None, eye_mask=None):
+               texture_png=None, normals=None, eye_mask=None, hair_mask=None):
     """Assemble the glTF JSON and its binary blob.
 
     verts (V,3), faces (F,3), joints (J,3) rest positions, parents (J,),
@@ -139,6 +139,9 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     eye_mask: (F,) bool, True for eyeball triangles. When given, the mesh is
     emitted as TWO primitives so the eyes can carry their own material -- skin
     is matte, eyes are wet and glossy, and one roughness cannot serve both.
+    hair_mask: (F,) bool, True for the inflated scalp shell (face3d/hair.py).
+    A third primitive, for the same reason and so a consumer can restyle or
+    hide the hair without touching the head.
     """
     buf = _Buffer()
     verts = np.asarray(verts, np.float32)
@@ -161,15 +164,26 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     attributes["JOINTS_0"] = buf.add(ji, UNSIGNED_SHORT, "VEC4", target=34962)
     attributes["WEIGHTS_0"] = buf.add(jw, FLOAT, "VEC4", target=34962)
 
-    # One index buffer, or two when the eyes are split out. Both primitives
-    # reference the SAME vertex accessors -- only the indices and the material
-    # differ -- so splitting costs one extra index buffer, not a second copy of
-    # the mesh.
-    if eye_mask is None:
-        groups = [("skin", faces)]
-    else:
-        eye_mask = np.asarray(eye_mask, bool)
-        groups = [("skin", faces[~eye_mask]), ("eyes", faces[eye_mask])]
+    # One index buffer per part. Every primitive references the SAME vertex
+    # accessors -- only the indices and the material differ -- so splitting
+    # costs one extra index buffer each, not another copy of the mesh.
+    #
+    # Order is fixed and materials are built in the same order below, so
+    # primitive i uses material i. Each triangle lands in exactly one group;
+    # whatever no mask claims is skin.
+    parts = []
+    if eye_mask is not None:
+        parts.append(("eyes", np.asarray(eye_mask, bool), 0.15, False))
+    if hair_mask is not None:
+        parts.append(("hair", np.asarray(hair_mask, bool), 0.70, True))
+
+    used = np.zeros(len(faces), bool)
+    claimed = []
+    for pname, m, rough, dbl in parts:
+        m = m & ~used            # first mask wins, so groups cannot overlap
+        used |= m
+        claimed.append((pname, m, rough, dbl))
+    groups = [("skin", faces[~used])] + [(n, faces[m]) for n, m, _, _ in claimed]
 
     materials, images, textures, samplers = [], [], [], []
     if texture_png is not None:
@@ -193,19 +207,23 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
             },
             "doubleSided": False,
         })
-        if eye_mask is not None:
-            # Eyes are wet. A low roughness gives them the sharp catchlight that
-            # a matte sphere cannot produce, and its absence is a large part of
-            # why CG eyes read as dead. Same texture and UVs -- only the surface
-            # response differs.
+        # One material per extra part, in the same order as `groups`.
+        #
+        # Eyes are wet: a low roughness gives them the sharp catchlight a matte
+        # sphere cannot produce, and its absence is a large part of why CG eyes
+        # read as dead. Hair takes a middle roughness for its sheen, and is
+        # double-sided because inflating the scalp can turn a concave patch
+        # inside out, which backface culling would render as a hole.
+        # Same texture and UVs throughout -- only the surface response differs.
+        for pname, _, rough, dbl in claimed:
             materials.append({
-                "name": "eyes",
+                "name": pname,
                 "pbrMetallicRoughness": {
                     "baseColorTexture": {"index": 0},
                     "metallicFactor": 0.0,
-                    "roughnessFactor": 0.15,
+                    "roughnessFactor": rough,
                 },
-                "doubleSided": False,
+                "doubleSided": dbl,
             })
 
     # Morph targets are declared per primitive, but both primitives can point at
@@ -228,7 +246,7 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
             "mode": 4,
         }
         if materials:
-            prim["material"] = min(i, len(materials) - 1)
+            prim["material"] = i
         if targets is not None:
             prim["targets"] = targets
         primitives.append(prim)

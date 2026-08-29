@@ -91,8 +91,10 @@ that the bottleneck here is the *kind* of supervision, not its quantity — and
 it is consistent with six corpus experiments in this project all landing inside
 1.24–1.29.
 
-Cannot represent: eyewear, facial hair, hair, tongue, ears in detail. FLAME has
-no basis for them.
+Hair is a fitted cap, not a hairstyle — see Export below.
+
+Cannot represent: eyewear, facial hair, tongue, ears in detail. FLAME has no
+basis for them.
 
 ## Input quality dominates everything
 
@@ -126,6 +128,7 @@ and that includes the FLAME basis, not just the image corpora.
 | DigiFace-1M | R-UDA v1.0 | **yes, explicitly** |
 | FFHQ (permissive subset) | CC BY / PD / CC0 | yes |
 | CelebA | non-commercial, no redistribution of "derived data" | **no** |
+| MediaPipe segmenter / landmarker | Apache-2.0 | yes |
 
 **`runs/deca_open` is licence-clean.** FLAME 2023 Open (CC-BY-4.0) with
 DigiFace + FFHQ only — no CelebA, no FLAME 2020. It is the model to use for
@@ -200,7 +203,8 @@ Evaluation: `scripts/now_predict.py` + Docker (`face3d.now.run_docker_eval`),
 
 ## Export
 
-GLB carries: 5023 verts, 9976 tris, smooth normals, UVs, an embedded 512×512
+GLB carries: 5023 verts, 9976 tris in three primitives (skin, eyes, hair)
+sharing one set of vertex accessors, smooth normals, UVs, an embedded 512×512
 baseColour PNG, a 5-joint armature
 (root/neck/jaw/eye_left/eye_right), and 21 named morph targets
 (`expr_00`…`expr_19`, `jaw_open`). Head is ~31 cm tall at the origin, Y-up.
@@ -219,6 +223,24 @@ It inherits the fit's weaknesses: where geometry is wrong the texture smears,
 and cast shadows and specular highlights stay baked in, because order-2 SH has
 no model of either. Sunglasses and stray hair project too — which is what makes
 the capture guide above load-bearing rather than cosmetic.
+
+**Hair is the scalp inflated to fit the photograph's hair outline**
+(`face3d/hair.py`), not a hair model. MediaPipe's selfie multiclass segmenter
+(Apache-2.0) marks hair pixels; the hair outline is compared to the scalp
+outline per angle around the head; the scalp is pushed out along its normals by
+the difference, tapered to nothing at the hairline. The projection then paints
+the person's own hair onto it, and unseen scalp is filled with the mean of the
+hair that *was* seen.
+
+Be clear what that is. It is a cap following one view's silhouette. It cannot do
+a parting, a curl, a strand, or anything that leaves the skull — a ponytail, a
+fringe over an eye, hair past the shoulders. For short and medium hair it turns
+a bald mannequin into something recognisable; for long hair it gives a helmet
+whose outline is right from the front and wrong behind. Thickness is capped at
+4 cm, and below 4 mm no shell is emitted at all, so a bald head stays bald
+rather than gaining a swollen skull. Doing better means authored hair assets or
+strand reconstruction, and neither is a bigger version of this. Adds ~300 ms.
+`--no-hair` turns it off.
 
 ## Privacy
 

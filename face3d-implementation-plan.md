@@ -257,6 +257,8 @@ Fill this in as assets are acquired. It is a deliverable, not bookkeeping.
 | DECA weights | DECA repo | Non-commercial research | No | **No** | ☐ |
 | BFM albedo (`FLAME_albedo_from_BFM.npz`) | Separate BFM registration | Research | No | No | ☐ if albedo in scope |
 | FFHQ (if used) | NVIDIA | CC BY-NC-SA 4.0 | No | — | ☐ |
+| MediaPipe face landmarker | storage.googleapis.com/mediapipe-models | Apache-2.0 | Yes | Yes | ☑ |
+| **MediaPipe selfie multiclass segmenter** | same | **Apache-2.0** | **Yes** | **Yes** | ☑ 2026-08-29 |
 | Demo photos | Self + consented friends | Explicit consent on file | N/A | N/A | ☐ |
 
 ### The distribution constraint (added 2026-08-20)

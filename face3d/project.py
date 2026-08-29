@@ -240,7 +240,8 @@ def delight(rgb, normals, light, weight=None):
 
 
 def project_photo(flame, image, params, verts, static, face_mask=None,
-                  screen=512):
+                  screen=512, facing_min=FACING_MIN, facing_max=FACING_MAX,
+                  photo_mask=None):
     """Sample a photograph into UV space. -> (albedo (R,R,3), weight (R,R)).
 
     image   (H,W,3) float 0-1, the SAME crop the encoder saw, at any resolution
@@ -248,6 +249,22 @@ def project_photo(flame, image, params, verts, static, face_mask=None,
     verts   (1,V,3) posed vertices, as fed to the renderer
     static  the tuple from load_static()
     weight  per-texel confidence in 0-1; 0 means "we learned nothing here"
+
+    facing_min/max may be arrays over the texture rather than scalars, which is
+    how the hair shell gets sampled at all. The band is set for a face pointing
+    at the camera; the crown of the head grazes it, so the default rejects the
+    top of the scalp entirely and the shell comes out untextured. A stretched
+    hair sample is much better than none, while on the FACE a stretched sample
+    is worth rejecting -- so the two regions want different thresholds.
+
+    `photo_mask` (H,W) in 0-1, in the same frame as `image`, says which PIXELS
+    are allowed to be sampled. The mesh mask says which texels may be painted;
+    this says which pixels they may be painted from, and the two are not the
+    same question. Near the silhouette a texel is legitimately visible and its
+    sample still lands a pixel outside the head, so the head gets painted with
+    whatever was behind it -- with the grazing band the hair shell needs, the
+    crown came out with a patch of sky on it, white in one photograph and blue
+    in another.
     """
     fid, bary, uv_mask, _, _ = static
     dev = verts.device
@@ -290,9 +307,18 @@ def project_photo(flame, image, params, verts, static, face_mask=None,
 
     # `project` puts the camera on +z looking back down it, so the FLAME-space
     # z component of the normal IS n.v -- no separate view vector needed.
-    facing = _smoothstep(n[0, ..., 2], FACING_MIN, FACING_MAX)
+    lo = torch.as_tensor(facing_min, dtype=rgb.dtype, device=dev)
+    hi = torch.as_tensor(facing_max, dtype=rgb.dtype, device=dev)
+    facing = _smoothstep(n[0, ..., 2], lo, hi)
 
     w = visible.to(rgb.dtype) * facing
+    if photo_mask is not None:
+        pm = torch.as_tensor(photo_mask, dtype=rgb.dtype, device=dev)
+        keep = F.grid_sample(pm[None, None], grid, mode="bilinear",
+                             align_corners=False, padding_mode="zeros")
+        # Squared so a texel straddling the edge, where bilinear returns ~0.5
+        # and the colour is already half background, is pushed down hard.
+        w = w * keep[0, 0].clamp(0, 1) ** 2
     if face_mask is not None:
         # Outside the fitted skin region the "photograph" is hair, background
         # or FLAME's invented neck stub. Projecting those produces a head
