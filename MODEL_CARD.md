@@ -195,18 +195,41 @@ python scripts/train.py --identity-data data/digiface --epochs 3 --batch 8 -k 4 
 Evaluation: `scripts/now_predict.py` + Docker (`face3d.now.run_docker_eval`),
 `scripts/eval_closure.py --data {digiface,celeba}`, `scripts/diag_identity.py`,
 `scripts/render_compare.py`. Export: `scripts/export_head.py --image X
---checkpoint runs/deca_joint/encoder.pt --out head.glb`.
+--out head.glb` (defaults to the deca_open / FLAME 2023 Open pair; pass
+`--checkpoint` and `--flame-model` together or not at all).
 
 ## Export
 
-GLB carries: 5023 verts, 9976 tris, smooth normals, UVs, an embedded 256×256
-baseColour PNG baked from the predicted albedo, a 5-joint armature
+GLB carries: 5023 verts, 9976 tris, smooth normals, UVs, an embedded 512×512
+baseColour PNG, a 5-joint armature
 (root/neck/jaw/eye_left/eye_right), and 21 named morph targets
 (`expr_00`…`expr_19`, `jaw_open`). Head is ~31 cm tall at the origin, Y-up.
 Validator-clean (0 errors, 0 warnings).
+
+The texture is **sampled from the photograph**, not reconstructed from the 50
+albedo coefficients (`face3d/project.py`). The basis cannot represent a mole, a
+freckle, an eyebrow or stubble, because it holds no direction that varies at
+that scale; projecting the photo through the fitted camera recovers all of
+them, and eyebrows in particular read convincingly as texture on geometry that
+has none. The basis still fills whatever the camera never saw, mirrored across
+the face where a mirror is available. Adds ~250 ms. `--no-project` restores the
+old PCA-only bake.
+
+It inherits the fit's weaknesses: where geometry is wrong the texture smears,
+and cast shadows and specular highlights stay baked in, because order-2 SH has
+no model of either. Sunglasses and stray hair project too — which is what makes
+the capture guide above load-bearing rather than cosmetic.
 
 ## Privacy
 
 Face images are biometric data under GDPR and BIPA. This project's rules: no
 scraping, consent on file for every demo photograph, and licence-register rows
 for every corpus. Anything that accepts uploads should not retain them.
+
+Since the texture became a projection, **an exported GLB contains the
+photograph itself**, wrapped onto a mesh. That is a different object from 50
+PCA coefficients: the earlier bake could not reproduce a recognisable image of
+anybody, and this one is a recognisable image by construction. "Do not retain
+uploads" is satisfied in `webapp/pipeline.py`, which never writes one to disk —
+but the file the user downloads now carries their face as pixels, and any
+sharing of it is sharing the photograph.

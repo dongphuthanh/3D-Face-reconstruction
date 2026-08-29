@@ -305,10 +305,20 @@ class Reconstructor:
         return buf.getvalue()
 
     def reconstruct(self, image_bytes: bytes) -> bytes:
-        """Photograph -> GLB. Nothing touches the filesystem.
+        """Photograph -> GLB bytes. Nothing touches the filesystem.
 
         Uploaded faces are biometric data under GDPR and BIPA. The easiest way
         to honour "do not retain it" is to have no code path that could.
+        """
+        return glb_bytes(*self.build(image_bytes))
+
+    def build(self, image_bytes: bytes, targets: int = MORPH_TARGETS):
+        """Photograph -> (gltf dict, binary blob), the pieces before packing.
+
+        Split out from reconstruct() so scripts/export_head.py can write .gltf
+        alongside .glb without owning a second copy of this pipeline. It had
+        one, and the copy had drifted: it resolved FLAME implicitly, which
+        picks FLAME 2020 whatever the checkpoint was trained on.
         """
         # --- 1. decode -------------------------------------------------------
         # convert("RGB") normalises away greyscale, palettes and RGBA. Without
@@ -369,7 +379,7 @@ class Reconstructor:
         # glTF morph targets are offsets, not absolute positions, which is why
         # the neutral mesh and the deltas travel together.
         deltas, names, neutral = expression_targets(self.flame, shape,
-                                                    n_targets=MORPH_TARGETS)
+                                                    n_targets=targets)
 
         # The jaw is a JOINT in FLAME, not an expression component, so opening
         # the mouth is not reachable through the expression basis alone. We bake
@@ -421,4 +431,4 @@ class Reconstructor:
             # and glossy while the skin stays matte.
             eye_mask=self.eye_mask,
         )
-        return glb_bytes(gltf, blob)
+        return gltf, blob

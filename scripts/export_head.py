@@ -14,11 +14,11 @@ import torch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d import assets
-from face3d.encoder import ResNetEncoder
 from face3d.facemask import eye_faces
 from face3d.flame_torch import FlameTorch
 from face3d.gltf import build_gltf, write_glb, write_gltf
 from face3d.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
+from webapp.pipeline import NoFaceFound, Reconstructor
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
@@ -40,55 +40,71 @@ def uv_from_texture_space():
         return d["vt"].astype(np.float32), d["ft"].astype(np.int64)
 
 
+def write(a, gltf, blob, flame, n_targets):
+    """Write the GLB (and optionally the .gltf), then report what is in it."""
+    out = pathlib.Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_glb(out, gltf, blob)
+    print(f"  wrote {out.name}  ({out.stat().st_size / 1e6:.2f} MB)")
+    print(f"  {flame.n_verts} verts, {flame.n_faces} tris, {len(JOINT_NAMES)} joints, "
+          f"{n_targets} morph targets")
+    if a.also_gltf:
+        g = out.with_suffix(".gltf")
+        write_gltf(g, gltf, blob)
+        print(f"  wrote {g.name}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", default="", help="photograph; omit for the mean face")
-    ap.add_argument("--checkpoint", default=str(ROOT / "runs" / "id_swap" / "encoder.pt"))
+    ap.add_argument("--checkpoint", default=str(Reconstructor.CHECKPOINT))
+    ap.add_argument("--flame-model", default=Reconstructor.FLAME_MODEL,
+                    help="MUST match the checkpoint. The two bases share "
+                         "topology, so a mismatch renders quiet nonsense "
+                         "rather than raising")
     ap.add_argument("--out", default=str(ROOT / "out" / "head.glb"))
     ap.add_argument("--targets", type=int, default=20,
                     help="expression morph targets to export. All 100 is valid "
                          "glTF but many real-time engines cap far lower")
+    ap.add_argument("--no-project", action="store_true",
+                    help="bake the PCA albedo only, instead of sampling the "
+                         "photograph into UV space (face3d/project.py)")
     ap.add_argument("--also-gltf", action="store_true")
     a = ap.parse_args()
 
-    flame = FlameTorch(assets.model_path_or_skip()).to(DEV)
-    shape = None
-
+    # The photograph path is Reconstructor's job, verbatim -- this script used
+    # to carry its own copy of it, and the copy had drifted. It cropped and
+    # encoded correctly but resolved FLAME through assets.model_path_or_skip(),
+    # which returns FLAME 2020 whatever the checkpoint was trained on, and it
+    # still defaulted to a checkpoint (runs/id_swap) that no longer exists.
     if a.image:
-        from PIL import Image
-        from face3d.detect import FaceDetector, crop_square
         ckpt = pathlib.Path(a.checkpoint)
         if not ckpt.exists():
             print(f"SKIP - no checkpoint at {ckpt}")
             sys.exit(0)
-        enc = ResNetEncoder(n_shape=100, n_expr=50, pretrained=False).to(DEV)
-        enc.load_state_dict(torch.load(ckpt, map_location=DEV)["model"])
-        enc.eval()
-
-        im = np.asarray(Image.open(a.image).convert("RGB"))
-        with FaceDetector(blendshapes=False) as det:
-            r = det.detect(im)
-        if r is None:
+        rec = Reconstructor(checkpoint=ckpt, device=DEV,
+                            flame_model=a.flame_model,
+                            project=not a.no_project)
+        try:
+            gltf, blob = rec.build(pathlib.Path(a.image).read_bytes(),
+                                   targets=a.targets)
+        except NoFaceFound:
             print("no face found in the image")
             sys.exit(1)
-        crop, _ = crop_square(im, r["norm"], size=224)
-        x = torch.from_numpy(np.ascontiguousarray(crop)).permute(2, 0, 1)[None]
-        with torch.no_grad():
-            # calibrate=True: the encoder is over-confident about identity and
-            # the measured optimum scales its shape output down.
-            p = enc.predict(x.float().to(DEV) / 255.0, calibrate=True)
-        shape = p.shape[0].cpu().numpy()
-        albedo = p.albedo[0].detach()
-        eye = p.eye[0].detach()
         print(f"encoded {a.image}")
-    else:
-        # The mean face gets the mean albedo, i.e. zero coefficients, rather
-        # than no texture at all -- a grey head is not a useful default.
-        albedo = torch.zeros(50)
-        from face3d.eyes import default_eye_params
-        _i, _s = default_eye_params(1)
-        eye = torch.cat([_i, _s], 1)[0]
-        print("no --image: exporting the FLAME mean face")
+        write(a, gltf, blob, rec.flame, a.targets + 1)
+        return
+
+    # No photograph, so nothing to encode and nothing to project. The mean face
+    # gets the mean albedo, i.e. zero coefficients, rather than no texture at
+    # all -- a grey head is not a useful default.
+    flame = FlameTorch(assets.model_path(a.flame_model)).to(DEV)
+    shape = None
+    albedo = torch.zeros(50)
+    from face3d.eyes import default_eye_params
+    _i, _s = default_eye_params(1)
+    eye = torch.cat([_i, _s], 1)[0]
+    print("no --image: exporting the FLAME mean face")
 
     deltas, names, neutral = expression_targets(flame, shape, n_targets=a.targets)
     deltas = np.concatenate([deltas, jaw_target(flame, shape)[None]], 0)
@@ -147,16 +163,7 @@ def main():
         uv=uv, name="face3d_head", texture_png=tex_png,
         eye_mask=eye_faces(flame).cpu().numpy())
 
-    out = pathlib.Path(a.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_glb(out, gltf, blob)
-    print(f"  wrote {out.name}  ({out.stat().st_size / 1e6:.2f} MB)")
-    print(f"  {flame.n_verts} verts, {flame.n_faces} tris, {len(JOINT_NAMES)} joints, "
-          f"{len(names)} morph targets")
-    if a.also_gltf:
-        g = out.with_suffix(".gltf")
-        write_gltf(g, gltf, blob)
-        print(f"  wrote {g.name}")
+    write(a, gltf, blob, flame, len(names))
 
 
 if __name__ == "__main__":
