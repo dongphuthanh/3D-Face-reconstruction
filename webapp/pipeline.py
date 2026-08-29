@@ -20,6 +20,7 @@ import threading
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -32,6 +33,7 @@ from face3d.facemask import eye_faces
 from face3d.flame_torch import FlameTorch
 from face3d.gltf import build_gltf, glb_bytes
 from face3d.landmarks import LandmarkEmbedding
+from face3d.project import composite, load_static, project_photo
 from face3d.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
 
 # Must match training. Every corpus and the NoW evaluation crop at 1.6, and a
@@ -42,6 +44,23 @@ CROP_MARGIN = 1.6
 # engines choke well before that, and the tail components move vertices by
 # fractions of a millimetre. 20 + jaw_open is a reasonable rig.
 MORPH_TARGETS = 20
+
+# Baked texture resolution when projecting the photograph (face3d/project.py).
+# 256 is right for the PCA basis, which has no detail above that scale anyway;
+# a projected texture carries real pores and eyebrows, so it earns the pixels.
+PROJECT_RES = 512
+
+# The crop the photograph is SAMPLED from. crop_square's NDC mapping does not
+# depend on its `size`, so this is the same field of view the encoder saw, just
+# not thrown away first: 224 is what the model needs to look at, not what the
+# texture needs to read from.
+PROJECT_CROP = 1024
+
+# Resolution of the depth buffer used for the occlusion test. Independent of
+# the texture: it only answers "is this texel hidden behind something", and the
+# head spans ~200 px however large the texture is. Measured at 512 it costs
+# 0.200 s, at 256 it costs 0.066 s, and the results are indistinguishable.
+PROJECT_SCREEN = 256
 
 
 class NoFaceFound(Exception):
@@ -74,8 +93,10 @@ class Reconstructor:
     CHECKPOINT = ROOT / "runs" / "deca_open" / "encoder.pt"
     FLAME_MODEL = "FLAME2023Open/flame2023_Open.pkl"
 
-    def __init__(self, checkpoint=None, device="cpu", flame_model=None):
+    def __init__(self, checkpoint=None, device="cpu", flame_model=None,
+                 project=True):
         self.device = device
+        self.project = project
         checkpoint = pathlib.Path(checkpoint or self.CHECKPOINT)
         flame_model = flame_model or self.FLAME_MODEL
 
@@ -117,18 +138,45 @@ class Reconstructor:
             self.texture.attach_eyes(self.flame)
         self.uv = self._uv_layout(cache)
 
+        # Resolution the GLB's texture is baked at. Projection reads real detail
+        # out of the photograph, so it gets more pixels than the PCA basis can
+        # justify on its own.
+        self.tex_res = PROJECT_RES if self.project else 256
+
         # Which UV texels the photometric loss actually optimised. Depends only
         # on FLAME and the landmark embedding, so it is built once here rather
-        # than per request. See harmonise() for why it is needed.
+        # than per request. Used twice: to stop projection painting hair and
+        # background onto the head, and by harmonise() -- see there for why.
         self.face_mask = None
+        self.static = None
+        self.eye_keep = None
+        self.proj_mask = None
         if cache.exists():
             emb = LandmarkEmbedding(
                 ROOT / "mediapipe_landmark_embedding" /
                 "mediapipe_landmark_embedding.npz", device=device)
             with np.load(cache) as d:
-                self.face_mask = face_texel_mask(
-                    self.flame, emb, d["vt"].astype(np.float32),
-                    d["ft"].astype(np.int64))
+                vt = d["vt"].astype(np.float32)
+                ft = d["ft"].astype(np.int64)
+            self.face_mask = face_texel_mask(self.flame, emb, vt, ft,
+                                             resolution=self.tex_res)
+
+            if self.project:
+                # UV-space rasterisation and the mirror correspondence. Topology
+                # only, so it is cached to disk and shared by every request --
+                # ~1.4 s to build against a ~40 ms reconstruction.
+                self.static = load_static(self.flame, vt, ft,
+                                          resolution=self.tex_res, device=device)
+                self.proj_mask = self._soften(self.face_mask)
+                # Protect the generated eyes from being painted over. The
+                # eyeball is a sphere posed by a predicted gaze, so projecting
+                # the photograph onto it would smear an iris across the sclera
+                # wherever that gaze is even slightly off -- and the procedural
+                # iris already tracks the photo at r = +0.822.
+                a = self.texture.eye_alpha                      # (1,1,256,256)
+                a = F.interpolate(a, size=(self.tex_res, self.tex_res),
+                                  mode="bilinear", align_corners=False)
+                self.eye_keep = a[0, 0].cpu().numpy()
 
         # MediaPipe graphs are stateful and NOT safe to share across threads.
         # FastAPI runs sync handlers in a worker threadpool, so two concurrent
@@ -140,6 +188,29 @@ class Reconstructor:
         self.eye_mask = eye_faces(self.flame).cpu().numpy()
 
         self._local = threading.local()
+
+    def _soften(self, mask, erode=0.02, blur=0.035):
+        """Turn the hard skin mask into a wide ramp, for use as a blend alpha.
+
+        face_texel_mask() rasterises whole triangles, so its boundary is a
+        polygon with visible straight edges. Used directly as the projection
+        weight that boundary is drawn onto the face: the first render showed a
+        crisp polygonal outline across the forehead where the photograph
+        stopped and the basis took over.
+
+        Eroding first, then blurring, keeps the soft ramp INSIDE the region the
+        loss actually optimised, rather than smearing the projection outwards
+        into the hair. Both radii are fractions of the texture, so this behaves
+        the same at any resolution.
+        """
+        from PIL import Image, ImageFilter
+
+        R = mask.shape[0]
+        img = Image.fromarray((mask * 255).astype(np.uint8))
+        for _ in range(max(1, int(erode * R / 4))):
+            img = img.filter(ImageFilter.MinFilter(5))       # ~2 px a pass
+        img = img.filter(ImageFilter.GaussianBlur(blur * R))
+        return np.asarray(img).astype(np.float32) / 255.0
 
     def _detector(self):
         """One FaceDetector per thread, created lazily on first use."""
@@ -185,29 +256,48 @@ class Reconstructor:
         uv[:, 1] = 1.0 - uv[:, 1]                # OBJ bottom-up -> glTF top-down
         return uv
 
-    def _bake_texture(self, albedo, eye=None):
-        """50 albedo coefficients -> PNG bytes, entirely in memory.
+    def _bake_texture(self, albedo, eye=None, photo=None, params=None,
+                      verts=None):
+        """Albedo coefficients (+ optionally the photograph) -> PNG bytes.
 
-        FlameTexture.texture() evaluates mean + sum(coeff_i * basis_i) to give a
-        (1,3,256,256) image in [0,1]. We convert to 8-bit RGB and encode as PNG
-        so it can be embedded directly in the GLB's binary chunk, keeping the
-        asset a single self-contained file with no external references.
+        Two sources, layered. FlameTexture.texture() evaluates
+        mean + sum(coeff_i * basis_i), which covers the whole head but carries
+        no detail: 50 numbers cannot encode a mole or an eyebrow. When the
+        photograph is available we sample it directly into UV space and lay that
+        over the top, keeping the basis underneath for everything the camera
+        never saw. See face3d/project.py.
+
+        Everything stays in memory and is encoded as PNG for the GLB's binary
+        chunk, so the asset is one self-contained file with no external refs.
         """
         if self.texture is None or self.uv is None:
             return None
         with torch.no_grad():
             # albedo is (50,); texture() wants a batch, hence [None] -> (1,50).
             tex = self.texture.texture(albedo[None].to(self.device),
-                                       eye=eye[None].to(self.device))[0]
+                                       eye=eye[None].to(self.device))
+            if tex.shape[-1] != self.tex_res:
+                tex = F.interpolate(tex, size=(self.tex_res, self.tex_res),
+                                    mode="bilinear", align_corners=False)
+            # (1,3,R,R) -> (R,R,3), the layout everything downstream expects.
+            base = tex[0].permute(1, 2, 0).clamp(0, 1)
 
-        # (3,H,W) float [0,1] -> (H,W,3) uint8, which is what PIL expects.
-        arr = tex.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+            if photo is not None and self.static is not None:
+                alb, w = project_photo(self.flame, photo, params, verts,
+                                       self.static, face_mask=self.proj_mask,
+                                       screen=PROJECT_SCREEN)
+                base = composite(base, alb, w, self.static,
+                                 feather=0.012 * self.tex_res,
+                                 keep=self.eye_keep)
+
+        arr = base.cpu().numpy()
 
         # Replace the un-fitted neck and scalp with the fitted face's own tone.
         # Without this the basis mean shows through at 27% higher saturation
         # than the subject, and a correct face reads as washed out beside it.
+        # Scale the falloff with resolution so it stays the same width of face.
         if self.face_mask is not None:
-            arr = harmonise(arr, self.face_mask)
+            arr = harmonise(arr, self.face_mask, blur=10.0 * self.tex_res / 256)
 
         arr = (arr * 255).astype(np.uint8)
         buf = io.BytesIO()
@@ -258,6 +348,15 @@ class Reconstructor:
             # only reason the model beats a constant mesh.
             p = self.enc.predict(x, calibrate=True)
 
+            # The posed mesh the encoder actually fitted. Only needed to project
+            # the photograph, which has to sample the image at the place THIS
+            # geometry says each texel landed -- the neutral export mesh below
+            # is a different pose and would sample the wrong pixels.
+            verts = None
+            if self.project and self.static is not None:
+                pp = p.pad_to(self.flame.n_shape, self.flame.n_expr)
+                verts, _ = self.flame(pp.shape, pp.expr, pp.pose)
+
         # From here on we are building the ASSET, not running the model, so
         # everything moves to numpy. [0] drops the batch dimension.
         shape = p.shape[0].cpu().numpy()          # (100,) identity coefficients
@@ -286,7 +385,20 @@ class Reconstructor:
         joints = rest_joints(self.flame, shape).cpu().numpy()
 
         # --- 8. texture ------------------------------------------------------
-        tex_png = self._bake_texture(p.albedo[0], p.eye[0])
+        # Re-crop the SAME box at higher resolution. crop_square's NDC mapping
+        # is independent of `size`, so this is the identical field of view the
+        # encoder saw and the fitted camera still projects into it correctly --
+        # we simply stopped throwing the pixels away. 224 is what the model
+        # needs to look at; the texture wants everything the photo has.
+        photo = None
+        if verts is not None:
+            hi, _ = crop_square(img, res["norm"], size=PROJECT_CROP,
+                                margin=CROP_MARGIN)
+            photo = torch.from_numpy(np.ascontiguousarray(hi))
+            photo = photo.to(self.device).float() / 255.0
+
+        tex_png = self._bake_texture(p.albedo[0], p.eye[0], photo=photo,
+                                     params=p, verts=verts)
 
         # --- 9. assemble ------------------------------------------------------
         # build_gltf returns (json_dict, binary_blob); glb_bytes packs them into
