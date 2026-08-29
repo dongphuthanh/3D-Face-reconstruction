@@ -107,10 +107,17 @@ class Reconstructor:
     FLAME_MODEL = "FLAME2023Open/flame2023_Open.pkl"
 
     def __init__(self, checkpoint=None, device="cpu", flame_model=None,
-                 project=True, hair=True):
+                 project=True, hair=False):
         self.device = device
         self.project = project
-        # Hair rides on projection: the shell is only worth having if the
+        # OFF by default. The shell is a cap fitted to one view's silhouette,
+        # and on real photographs it reads worse than leaving the head bald --
+        # it cannot follow a hairstyle, so it lands in the valley between "no
+        # hair" and "that person's hair". Kept behind the flag rather than
+        # deleted because the measurement works; the representation is what is
+        # wrong, and that needs real hair geometry, not a better fit.
+        #
+        # Also rides on projection: the shell is only worth anything if the
         # photograph's own hair can be painted onto it.
         self.hair = hair and project
         checkpoint = pathlib.Path(checkpoint or self.CHECKPOINT)

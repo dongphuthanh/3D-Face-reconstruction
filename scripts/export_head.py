@@ -69,9 +69,10 @@ def main():
     ap.add_argument("--no-project", action="store_true",
                     help="bake the PCA albedo only, instead of sampling the "
                          "photograph into UV space (face3d/project.py)")
-    ap.add_argument("--no-hair", action="store_true",
-                    help="leave the head bald instead of fitting a scalp shell "
-                         "to the photograph (face3d/hair.py)")
+    ap.add_argument("--hair", action="store_true",
+                    help="fit a scalp shell to the photograph's hair outline "
+                         "(face3d/hair.py). Off by default: it is a cap, not a "
+                         "hairstyle, and on real photos it reads worse than bald")
     ap.add_argument("--also-gltf", action="store_true")
     a = ap.parse_args()
 
@@ -88,7 +89,7 @@ def main():
         rec = Reconstructor(checkpoint=ckpt, device=DEV,
                             flame_model=a.flame_model,
                             project=not a.no_project,
-                            hair=not a.no_hair)
+                            hair=a.hair)
         try:
             gltf, blob = rec.build(pathlib.Path(a.image).read_bytes(),
                                    targets=a.targets)
