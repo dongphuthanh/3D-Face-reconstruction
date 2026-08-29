@@ -1,0 +1,89 @@
+<!doctype html>
+<!--
+  Minimal harness for script.js. Deliberately plain: the lesson is FormData,
+  not layout.
+
+  <model-viewer> is a stopgap so you can see a result today. In M3 you replace
+  it with your own three.js scene, and only the last function in script.js
+  changes.
+
+  Serve this folder, do not double-click the file:
+      python -m http.server 8080     ->  http://localhost:8080
+  Opening it as file:// gives the page a null origin and the browser blocks
+  everything.
+-->
+<meta charset="utf-8">
+<title>face3d</title>
+<link rel = "stylesheet" href = "style.css">
+<!--
+  IMPORT MAP. This is what makes three.js work without a bundler.
+
+  three's addon files (GLTFLoader, OrbitControls, ...) contain
+      import { ... } from 'three';
+  'three' is a BARE SPECIFIER -- a name, not a path. Bundlers resolve those by
+  looking in node_modules; a browser cannot, and refuses with
+
+      Failed to resolve module specifier "three"
+
+  which kills the whole module graph, so NONE of script.js runs -- not even the
+  upload button. An import map tells the browser what those names mean.
+
+  Two rules:
+    * it must appear BEFORE any module that relies on it; import maps are not
+      hoisted.
+    * keep the version identical in both lines. Two copies of three.js loaded
+      at once break instanceof checks in ways that surface much later and make
+      no sense.
+
+  The trailing slashes on "three/addons/" map a whole directory, so any file
+  under examples/jsm/ can be imported by that prefix.
+-->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.179.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.179.1/examples/jsm/"
+  }
+}
+</script>
+
+<body>
+<h1><i>FACE 3D Generator</i></h1>
+<p>Upload your image, then click Reconstruct to preview, or Download to download the glb file.</p>
+
+<!--
+  accept="image/*" only filters the file picker. It is a convenience, NOT a
+  check: a user can still choose any file, which is why server.py validates
+  content_type itself. Never trust the client.
+-->
+<div class="upload-container">
+  <label for="file" class="custom-file-upload">
+    Upload File
+  </label>
+</div>
+
+<input type="file" id="file" accept="image/*" style="display: none;">
+
+
+<p id="status"></p>
+
+<!-- camera-controls enables drag-to-rotate; auto-rotate spins it slowly. -->
+<div id="viewer"></div>
+
+<div class="button-container">
+  <button id="go" class = "btn-grad">Reconstruct</button>
+  <button id="download" class = "btn-grad">Download</button>
+</div>
+
+<!-- Filled in by buildSliders() once a model loads. Empty until then, because
+     the target names come from the GLB rather than being hard-coded here. -->
+<div id="rig">
+  <div id="rig-head">
+    <span>Expression rig</span>
+    <button id="rig-reset" type="button">Reset</button>
+  </div>
+  <div id="sliders"></div>
+</div>
+
+<script type="module" src="script.js"></script>
+</body>
