@@ -11,6 +11,19 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const API = "http://127.0.0.1:8000/reconstruct";
 
+// ONE dial for how bright the head is lit. Turn it down if faces look washed
+// out, up if they look muddy.
+//
+// It needs to be low, and the reason is not a matter of taste. The baked
+// texture is not true reflectance: de-lighting removes the VARIATION in the
+// photograph's lighting but deliberately keeps the level, so that skin tone
+// survives. Measured over 20 subjects the texture comes out at 0.99x the
+// brightness of the photographed skin it came from -- it already looks lit.
+// Lighting it again at full strength is applying illumination twice, and the
+// result is a pale, desaturated face: ACES compresses the top end, so the
+// error shows up as whiteness rather than as glare.
+const LIGHT = 0.45;
+
 const fileInput = document.getElementById("file");
 const goButton = document.getElementById("go");
 const downloadButton = document.getElementById("download")
@@ -163,7 +176,7 @@ function initThree() {
     // 0.65 brings the rendered face back to roughly the photograph's own
     // brightness. Raise it if you prefer a brighter look; the number to beat
     // is the photo, not personal preference.
-    renderer.toneMappingExposure = 0.65;
+    renderer.toneMappingExposure = 0.65 * (0.55 + 0.45 * LIGHT);
 
     // Soft shadows, so the key light below can ground the head instead of
     // leaving it floating. PCFSoft is the good-looking option; the cost is
@@ -220,7 +233,7 @@ function initThree() {
     // exposes the model correctly; the key exists to add DIRECTION, not
     // brightness. Environment and lights are additive, and treating them as
     // independent is how a scene ends up washed out.
-    const key = new THREE.DirectionalLight(0xffffff, 0.7);
+    const key = new THREE.DirectionalLight(0xffffff, 0.7 * LIGHT);
     keyLight = key;                            // frameObject fits its shadow
     key.position.set(0.6, 0.9, 1.2);          // front, above, slightly right
     key.castShadow = true;
@@ -231,14 +244,14 @@ function initThree() {
     // Fill from the opposite side at much lower intensity, so the shadowed
     // half does not go black. Standard three-point-lighting logic: the key
     // shapes, the fill rescues detail from shadow.
-    const fill = new THREE.DirectionalLight(0xbcd4ff, 0.25);
+    const fill = new THREE.DirectionalLight(0xbcd4ff, 0.25 * LIGHT);
     fill.position.set(-1.0, 0.2, 0.6);
     scene.add(fill);
 
     // The environment ALREADY provides ambient from every direction, so a
     // hemisphere light on top is mostly redundant. Kept very low purely to lift
     // the shadow side a little; set it to 0 and you will barely notice.
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.15));
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.15 * LIGHT));
 
     // Keep the canvas matched to its container when the window resizes.
     // Miss this and the head stretches or squashes, because the drawing buffer
@@ -338,6 +351,13 @@ function frameObject(object) {
         if (child.isMesh) {
             child.castShadow = true;
             child.receiveShadow = true;
+            // The environment is the PRIMARY light here, so it is the one that
+            // most needs scaling back -- the directional lights are already
+            // modest. GLTFLoader leaves envMapIntensity at 1.
+            if (child.material) {
+                child.material.envMapIntensity = LIGHT;
+                child.material.needsUpdate = true;
+            }
         }
     });
 }

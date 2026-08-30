@@ -150,7 +150,7 @@ def compose(base, params, masks, noise, crease):
     return out.clamp(0.0, 1.0)
 
 
-def settle_unobserved(tex, skin_mask, unobserved, strength=0.8, factor=1.06):
+def settle_unobserved(tex, skin_mask, unobserved, strength=0.92, factor=1.02):
     """Calm the parts of the head no frontal camera could have seen.
 
     Measured over 30 subjects, the underside of the jaw reached 1.68x the face's
