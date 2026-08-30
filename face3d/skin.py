@@ -44,11 +44,10 @@ from .albedo import CACHE_DIR
 # skin RGB, lip RGB, brow RGB, freckle amount, crease amount
 N_PARAMS = 11
 
-# How far a lip or brow colour is allowed to take over its region. Not 1.0:
-# the underlying texture carries the shading and the lip seam, and replacing it
-# outright gives a flat painted-on mouth.
-LIP_STRENGTH = 0.65
-BROW_STRENGTH = 0.55
+# How much of the way toward the requested colour each region is moved. These
+# scale a SHIFT, not a blend -- see compose().
+LIP_STRENGTH = 0.9
+BROW_STRENGTH = 0.9
 
 # Ceilings on the multiplicative darkening effects.
 FRECKLE_MAX = 0.22
@@ -127,10 +126,21 @@ def compose(base, params, masks, noise, crease):
     cur = (out * m).sum((2, 3), keepdim=True) / m.sum((2, 3), keepdim=True).clamp(min=1e-6)
     out = out + (p["skin"][:, :, None, None] - cur)
 
-    for name, strength in (("lip", LIP_STRENGTH), ("brow", BROW_STRENGTH)):
-        key = "lips" if name == "lip" else "brows"
-        a = masks[key][None, None] * strength
-        out = out * (1 - a) + p[name][:, :, None, None] * a
+    # Lips and brows: SHIFT the region so its mean becomes the requested
+    # colour. Not a blend toward that colour, which was the first attempt and
+    # was wrong in a way worth recording. The parameter is the region's MEAN,
+    # and a brow region is mostly the skin around the hairs -- measured, the
+    # region averaged 0.854/0.634/0.524 while the hairs themselves sat at 0.428.
+    # Blending the whole region toward that skin-dominated mean erases the
+    # hairs: brow contrast fell from 0.208 to 0.153 and the eyebrows went faint.
+    # A shift moves the average while leaving every difference within the
+    # region intact, so the hairs stay as dark relative to their surroundings as
+    # they were.
+    for name, key, strength in (("lip", "lips", LIP_STRENGTH),
+                                ("brow", "brows", BROW_STRENGTH)):
+        m = masks[key][None, None]
+        cur = (out * m).sum((2, 3), keepdim=True) / m.sum((2, 3), keepdim=True).clamp(min=1e-6)
+        out = out + (p[name][:, :, None, None] - cur) * m * strength
 
     # Freckles and creases darken; they never lighten. Applied globally rather
     # than through a skin mask, because the skin mask is a polygon and its edge

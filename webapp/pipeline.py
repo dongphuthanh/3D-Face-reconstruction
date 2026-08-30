@@ -123,7 +123,7 @@ class Reconstructor:
     # Matched pair. Change both or neither.
     CHECKPOINT = ROOT / "runs" / "deca_open" / "encoder.pt"
     FLAME_MODEL = "FLAME2023Open/flame2023_Open.pkl"
-    TEXGEN = ROOT / "runs" / "texgen_gen5" / "model.pt"
+    TEXGEN = ROOT / "runs" / "texgen_gen6" / "model.pt"
 
     def __init__(self, checkpoint=None, device="cpu", flame_model=None,
                  project=True, hair=False, texgen=True):
@@ -193,6 +193,7 @@ class Reconstructor:
         if self.texture is not None:
             self.texture.attach_eyes(self.flame)
         self.uv = self._uv_layout(cache)
+        self.uv_split = self._uv_split(cache)
 
         # Resolution the GLB's texture is baked at. Projection reads real detail
         # out of the photograph, so it gets more pixels than the PCA basis can
@@ -328,6 +329,45 @@ class Reconstructor:
         self.eye_mask = eye_faces(self.flame).cpu().numpy()
 
         self._local = threading.local()
+
+    def _uv_split(self, cache):
+        """The UV unwrap without collapsing its seams. -> (uv2v, uv) or None.
+
+        glTF allows exactly one UV per vertex, and FLAME's unwrap needs 5118 for
+        5023 vertices: a seam is a cut where one vertex must appear at two
+        places in the texture. `_uv_layout` resolves that by letting the last
+        writer win, which is wrong for the handful of corners on a seam.
+
+        "A handful" is 284 triangle corners, 0.95% of the mesh, and it is not
+        invisible. They sit on the inner-mouth seam, so the wrong UV samples
+        somewhere unrelated in the texture and the GLB renders a bright patch
+        inside the mouth -- visible from below, which is exactly where nobody
+        looks until they do. It never showed up in any diagnostic render here
+        because those sample through the correct per-corner UVs; only the
+        export was affected.
+
+        The fix is the standard one: duplicate the seam vertices so each side
+        gets its own, which is what the unwrap always intended. Costs 95 extra
+        vertices, 1.9%.
+
+        NORMALS MUST STILL COME FROM THE UNSPLIT MESH. Recomputing them after
+        the split would treat the seam as a boundary and shade it as a crease,
+        trading an invisible texture bug for a visible lighting one.
+        """
+        if not cache.exists():
+            return None
+        with np.load(cache) as d:
+            vt = d["vt"].astype(np.float32)          # (5118, 2)
+            ft = d["ft"].astype(np.int64)            # (9976, 3)
+
+        faces = self.flame.faces.cpu().numpy()
+        uv2v = np.zeros(len(vt), np.int64)
+        for corner in range(3):
+            uv2v[ft[:, corner]] = faces[:, corner]
+
+        uv = vt.copy()
+        uv[:, 1] = 1.0 - uv[:, 1]                    # OBJ bottom-up -> glTF top-down
+        return uv2v, uv, ft
 
     def _soften(self, mask, erode=0.02, blur=0.035):
         """Turn the hard skin mask into a wide ramp, for use as a blend alpha.
@@ -698,16 +738,30 @@ class Reconstructor:
         # the GLB container with the 4-byte chunk padding the spec requires.
         # skin_weights (5023,5) says how much each joint influences each vertex;
         # build_gltf keeps the top 4 because glTF's JOINTS_0 is a vec4.
+        # Emit the seam-split mesh so no triangle corner carries a UV that
+        # belongs to the other side of a seam. See _uv_split.
+        verts_out, faces_out, uv_out = neutral, faces_np, self.uv
+        normals_out = None
+        weights_out = self.flame.weights.cpu().numpy()
+        deltas_out = deltas
+        if self.uv_split is not None:
+            uv2v, uv_out, faces_out = self.uv_split
+            normals_out = vertex_normals(neutral, faces_np)[uv2v]
+            verts_out = neutral[uv2v]
+            weights_out = weights_out[uv2v]
+            deltas_out = deltas[:, uv2v]
+
         gltf, blob = build_gltf(
-            verts=neutral,
-            faces=faces_np,
+            verts=verts_out,
+            faces=faces_out,
+            normals=normals_out,
             joints=joints,
             parents=self.flame.parents,
-            skin_weights=self.flame.weights.cpu().numpy(),
+            skin_weights=weights_out,
             joint_names=JOINT_NAMES,
-            morph_targets=deltas,
+            morph_targets=deltas_out,
             morph_names=names,
-            uv=self.uv,
+            uv=uv_out,
             name="face3d_head",
             texture_png=tex_png,
             # Split the eyeballs into their own primitive so they can be wet

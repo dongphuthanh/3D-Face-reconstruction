@@ -201,12 +201,23 @@ Evaluation: `scripts/now_predict.py` + Docker (`face3d.now.run_docker_eval`),
 
 ## Export
 
-GLB carries: 5023 verts, 9976 tris in two primitives (skin, eyes; three with
+GLB carries: **5118 verts** (5023 geometry vertices with 95 duplicated along UV
+seams -- see below), 9976 tris in two primitives (skin, eyes; three with
 `--hair`) sharing one set of vertex accessors, smooth normals, UVs, an embedded 512×512
 baseColour PNG, a 5-joint armature
 (root/neck/jaw/eye_left/eye_right), and 21 named morph targets
 (`expr_00`…`expr_19`, `jaw_open`). Head is ~31 cm tall at the origin, Y-up.
 Validator-clean (0 errors, 0 warnings).
+
+**Seam vertices are duplicated, not collapsed.** FLAME's unwrap needs 5118 UVs
+for 5023 vertices, because a seam is a cut where one vertex appears at two
+places in the texture; glTF allows one UV per vertex. Collapsing them is wrong
+for 284 triangle corners (0.95%), which sit on the inner-mouth seam and sampled
+somewhere unrelated -- a bright patch inside the mouth, visible from below. It
+appeared only in the exported GLB, never in any render here, because those
+sample through the correct per-corner UVs. Normals are still computed on the
+UNSPLIT mesh: recomputing after the split would treat the seam as a boundary
+and shade it as a crease.
 
 The texture is **sampled from the photograph**, not reconstructed from the 50
 albedo coefficients (`face3d/project.py`). The basis cannot represent a mole, a
