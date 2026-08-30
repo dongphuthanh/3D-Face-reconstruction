@@ -217,10 +217,30 @@ has none. The basis still fills whatever the camera never saw, mirrored across
 the face where a mirror is available. Adds ~250 ms. `--no-project` restores the
 old PCA-only bake.
 
-It inherits the fit's weaknesses: where geometry is wrong the texture smears,
-and cast shadows and specular highlights stay baked in, because order-2 SH has
-no model of either. Sunglasses and stray hair project too — which is what makes
-the capture guide above load-bearing rather than cosmetic.
+Two guards, because raw projection transfers whatever the photograph contains,
+faithfully, onto a head that cannot represent it.
+
+**Occluders are gated out by segmentation.** Audited over 14 FFHQ faces, 8
+carried one — spectacle frames, a fringe across the forehead, a beaded
+headdress, hair blown over a cheek — and this, not smearing, was the dominant
+artefact. MediaPipe's selfie multiclass model marks face skin, and only face
+skin may be sampled. The class boundary falls exactly where it is needed:
+eyebrows and lips are face skin and survive; glasses and headdresses are
+`other`, hair over the forehead is `hair`, and neither does.
+
+**Tone comes from the basis, detail from the photograph.** The two sources fail
+in opposite bands. The basis has no high frequencies at all, but its low
+frequencies cannot invent a dark band across a forehead. The projection is the
+reverse: its detail is a real measurement, while its low frequencies carry every
+error left unfixed — cast shadows order-2 SH has no model for, specular
+highlights, a room's colour cast, the broad smear where geometry is wrong. Those
+are large, soft and wrong, which is the most visible combination. So the
+projection's detail is kept and the basis sets the level under it.
+
+What still gets through: a cast shadow hard enough to read as an edge, and an
+occluder the segmenter calls skin. Where geometry is wrong the texture still
+smears — which is what makes the capture guide above load-bearing rather than
+cosmetic.
 
 **Hair is OFF by default** and the exported head is bald. What exists
 (`face3d/hair.py`) is the scalp inflated to fit the photograph's hair outline,

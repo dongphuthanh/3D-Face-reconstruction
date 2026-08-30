@@ -28,16 +28,22 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 from face3d import assets
 from face3d.albedo import CACHE_DIR, FlameTexture, face_texel_mask, harmonise
 from face3d.project import FACING_MAX, FACING_MIN
+
+# Cut between "detail, take it from the photograph" and "tone, take it from
+# the basis", as a fraction of the texture. See project.frequency_merge.
+MERGE_SIGMA = 0.045
+MERGE_STRENGTH = 0.85
 from face3d.detect import FaceDetector, crop_square
 from face3d.encoder import ResNetEncoder
 from face3d.facemask import eye_faces
 from face3d.flame_torch import FlameTorch
 from face3d.gltf import build_gltf, glb_bytes, vertex_normals
 from face3d.landmarks import LandmarkEmbedding
-from face3d.hair import (BACKGROUND, HAIR, MIN_THICKNESS, HairSegmenter,
-                         inflate, measure, project_px, recrop_mask,
-                         scalp_faces, scalp_region, shell_offset)
-from face3d.project import composite, load_static, project_photo
+from face3d.hair import (FACE_SKIN, HAIR, MIN_THICKNESS, HairSegmenter,
+                         inflate, measure, project_px, scalp_faces,
+                         scalp_region, shell_offset)
+from face3d.project import (composite, frequency_merge, load_static,
+                            project_photo)
 from face3d.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
 
 # Must match training. Every corpus and the NoW evaluation crop at 1.6, and a
@@ -74,6 +80,11 @@ PROJECT_SCREEN = 256
 HAIR_MARGIN = 3.0
 HAIR_SEG = 512
 HAIR_RATIO = CROP_MARGIN / HAIR_MARGIN
+
+# Resolution the occluder mask is segmented at. The model works at 256
+# internally and the mask is sampled through grid_sample, so it does not have
+# to match the photograph.
+SEG_SIZE = 512
 
 
 class NoFaceFound(Exception):
@@ -357,6 +368,11 @@ class Reconstructor:
                                        screen=PROJECT_SCREEN,
                                        facing_min=lo, facing_max=hi,
                                        photo_mask=photo_mask)
+                merged = frequency_merge(alb.cpu().numpy(),
+                                         base.cpu().numpy(),
+                                         sigma=MERGE_SIGMA * self.tex_res,
+                                         strength=MERGE_STRENGTH)
+                alb = torch.as_tensor(merged, dtype=alb.dtype, device=alb.device)
                 base = composite(base, alb, w, self.static,
                                  feather=0.012 * self.tex_res,
                                  keep=self.eye_keep)
@@ -466,15 +482,37 @@ class Reconstructor:
         # Segment the photograph, measure how far the hair stands off the skull,
         # and push the scalp out to meet it. See face3d/hair.py -- this is a cap
         # fitted to one view's silhouette, not a hairstyle.
-        hair_off, fg = None, None
+        # --- 5b. what may be sampled ----------------------------------------
+        # Gate the projection on the segmenter's face-skin class. This is the
+        # single biggest quality fix available, because the dominant artefact
+        # is not smearing -- it is OCCLUDERS being painted onto the face.
+        # Audited over 14 FFHQ faces, 8 carried one: spectacle frames, a fringe
+        # across the forehead, a beaded headdress, hair blown over a cheek.
+        # Projection has no notion of "this pixel is not skin", so it transfers
+        # them faithfully onto a head that cannot represent them.
+        #
+        # The class boundary happens to fall exactly where we need it: eyebrows
+        # and lips are face-skin, so they survive, while glasses and headdresses
+        # are `other` and hair over the forehead is `hair`, so they do not.
+        photo_mask = None
+        if verts is not None:
+            seg_crop, _ = crop_square(img, res["norm"], size=SEG_SIZE,
+                                      margin=CROP_MARGIN)
+            cats = self._segmenter().categories(seg_crop)
+            allow = cats == FACE_SKIN
+            if self.hair:
+                # The shell needs hair pixels, which are the very thing the
+                # face gate rejects. Opt-in, and it does re-admit a fringe.
+                allow = allow | (cats == HAIR)
+            photo_mask = self._soften(allow.astype(np.float32),
+                                      erode=0.0, blur=0.004)
+
+        # --- 5c. hair --------------------------------------------------------
+        hair_off = None
         if verts is not None and self.hair:
             wide, _ = crop_square(img, res["norm"], size=HAIR_SEG,
                                   margin=HAIR_MARGIN)
-            cats = self._segmenter().categories(wide)
-            hair_px = cats == HAIR
-            # Which PIXELS may be sampled at all. Anything but background: the
-            # head must never be painted with what was behind it.
-            fg = recrop_mask(cats != BACKGROUND, HAIR_RATIO, PROJECT_CROP)
+            hair_px = self._segmenter().categories(wide) == HAIR
             vpx, per_unit = project_px(verts, p.cam, HAIR_SEG, HAIR_RATIO)
             peak = measure(hair_px, vpx[self.scalp_np], per_unit)
             # Bald, or a hat, or a handful of stray pixels. A 2 mm shell reads
@@ -541,7 +579,7 @@ class Reconstructor:
         tex_png = self._bake_texture(p.albedo[0], p.eye[0], photo=photo,
                                      params=p, verts=verts,
                                      hair=hair_off is not None,
-                                     photo_mask=fg if hair_off is not None else None)
+                                     photo_mask=photo_mask)
 
         # --- 9. assemble ------------------------------------------------------
         # build_gltf returns (json_dict, binary_blob); glb_bytes packs them into

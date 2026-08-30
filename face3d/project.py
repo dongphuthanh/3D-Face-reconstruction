@@ -334,6 +334,39 @@ def project_photo(flame, image, params, verts, static, face_mask=None,
     return albedo[0], w * trust[0]
 
 
+def frequency_merge(projected, base, sigma, strength=1.0):
+    """Detail from the photograph, broad tone from the basis. -> (R,R,3).
+
+    The two texture sources fail in opposite bands, which is what makes mixing
+    them by frequency work rather than being a fudge.
+
+    The PCA basis is 50 numbers, so it has NO high frequencies at all -- it
+    cannot represent a pore, a mole or an eyebrow -- but its low frequencies are
+    reliable, because they are a fit over a population of real faces and it is
+    incapable of inventing a dark band across a forehead.
+
+    The projection is the reverse. Its high frequencies are real measurements of
+    this person. Its low frequencies carry every error we cannot fix: a cast
+    shadow the order-2 SH de-lighting has no model for, a specular highlight,
+    the colour cast of a room, the broad smear where the fitted geometry is
+    wrong. Those are exactly the "weird patches" -- they are large, soft and
+    wrong, which is the most visible combination.
+
+    So: keep the projection's detail, and let the basis set the level under it.
+    `sigma` is the cut. Too small and shadows survive; too large and eyebrows go
+    with them, since an eyebrow is only a few times smaller than a shadow.
+    """
+    from PIL import Image, ImageFilter
+
+    def blur(a):
+        img = Image.fromarray((np.clip(a, 0, 1) * 255).astype(np.uint8))
+        return (np.asarray(img.filter(ImageFilter.GaussianBlur(sigma)))
+                .astype(np.float32) / 255.0)
+
+    lo_p, lo_b = blur(projected), blur(base)
+    return np.clip(projected + strength * (lo_b - lo_p), 0.0, 1.0)
+
+
 def composite(base, albedo, weight, static, mirror=True, feather=3.0,
               keep=None):
     """Lay the projected texture over the PCA one. -> (R,R,3) float 0-1.
