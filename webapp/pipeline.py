@@ -44,6 +44,7 @@ from face3d.hair import (FACE_SKIN, HAIR, MIN_THICKNESS, HairSegmenter,
                          scalp_region, shell_offset)
 from face3d.project import (composite, frequency_merge, load_static,
                             project_photo)
+from face3d.texgen import TextureGenerator
 from face3d.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
 
 # Must match training. Every corpus and the NoW evaluation crop at 1.6, and a
@@ -116,11 +117,19 @@ class Reconstructor:
     # Matched pair. Change both or neither.
     CHECKPOINT = ROOT / "runs" / "deca_open" / "encoder.pt"
     FLAME_MODEL = "FLAME2023Open/flame2023_Open.pkl"
+    TEXGEN = ROOT / "runs" / "texgen_gen" / "model.pt"
 
     def __init__(self, checkpoint=None, device="cpu", flame_model=None,
-                 project=True, hair=False):
+                 project=True, hair=False, texgen=True):
         self.device = device
         self.project = project
+        # The learned texture generator (face3d/texgen.py). When on it
+        # REPLACES projection rather than layering on it: the point is that
+        # its output is on-manifold by construction, and compositing a raw
+        # projection over the top would hand back the artefacts it exists to
+        # exclude. It is also much faster -- no projection, no segmentation.
+        self.texgen = None
+        self.texgen_path = texgen
         # OFF by default. The shell is a cap fitted to one view's silhouette,
         # and on real photographs it reads worse than leaving the head bald --
         # it cannot follow a hairstyle, so it lands in the valley between "no
@@ -247,6 +256,27 @@ class Reconstructor:
                 self.facing_lo = FACING_MIN + sc * (0.02 - FACING_MIN)
                 self.facing_hi = FACING_MAX + sc * (0.25 - FACING_MAX)
 
+        if self.texgen_path:
+            path = pathlib.Path(self.TEXGEN if texgen is True else texgen)
+            if not path.exists():
+                # Fall back rather than raise. Unlike a FLAME/checkpoint
+                # mismatch, which produces plausible nonsense and must fail
+                # loudly, projection is a working alternative -- so say what
+                # happened and carry on. runs/ is gitignored, so a fresh clone
+                # legitimately arrives without this file.
+                print(f"    NOTE: no texture generator at {path}; falling back "
+                      f"to projection. Train it with scripts/train_texgen.py.",
+                      flush=True)
+                self.texgen_path = None
+            else:
+                ck = torch.load(path, map_location=device)
+                self.texgen = TextureGenerator(ck["latent"], 256, ck["width"],
+                                               pretrained=False).to(device)
+                self.texgen.load_state_dict(ck["model"])
+                self.texgen.eval()
+                print(f"    texture generator: {path.parent.name} "
+                      f"(val {ck['val']:.5f})", flush=True)
+
         # MediaPipe graphs are stateful and NOT safe to share across threads.
         # FastAPI runs sync handlers in a worker threadpool, so two concurrent
         # requests would otherwise call detect() on one object at the same time.
@@ -333,7 +363,7 @@ class Reconstructor:
         return uv
 
     def _bake_texture(self, albedo, eye=None, photo=None, params=None,
-                      verts=None, hair=False, photo_mask=None):
+                      verts=None, hair=False, photo_mask=None, crop=None):
         """Albedo coefficients (+ optionally the photograph) -> PNG bytes.
 
         Two sources, layered. FlameTexture.texture() evaluates
@@ -358,8 +388,20 @@ class Reconstructor:
             # (1,3,R,R) -> (R,R,3), the layout everything downstream expects.
             base = tex[0].permute(1, 2, 0).clamp(0, 1)
 
+            # The learned generator predicts a bounded residual over the basis
+            # at 256, whatever the bake resolution. Upsampling a residual is
+            # safe in a way upsampling a texture is not: it carries no absolute
+            # colour, so a soft edge in it cannot introduce a seam -- it can
+            # only soften a correction that was already smooth.
+            if self.texgen is not None and crop is not None:
+                r = self.texgen(crop.to(self.device))
+                if r.shape[-1] != self.tex_res:
+                    r = F.interpolate(r, size=(self.tex_res, self.tex_res),
+                                      mode="bilinear", align_corners=False)
+                base = (base + r[0].permute(1, 2, 0)).clamp(0, 1)
+
             w = None
-            if photo is not None and self.static is not None:
+            if photo is not None and self.static is not None and self.texgen is None:
                 mask = self.proj_mask_hair if hair else self.proj_mask
                 lo = self.facing_lo if hair else FACING_MIN
                 hi = self.facing_hi if hair else FACING_MAX
@@ -579,7 +621,7 @@ class Reconstructor:
         tex_png = self._bake_texture(p.albedo[0], p.eye[0], photo=photo,
                                      params=p, verts=verts,
                                      hair=hair_off is not None,
-                                     photo_mask=photo_mask)
+                                     photo_mask=photo_mask, crop=x)
 
         # --- 9. assemble ------------------------------------------------------
         # build_gltf returns (json_dict, binary_blob); glb_bytes packs them into

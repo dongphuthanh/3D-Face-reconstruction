@@ -217,8 +217,44 @@ has none. The basis still fills whatever the camera never saw, mirrored across
 the face where a mirror is available. Adds ~250 ms. `--no-project` restores the
 old PCA-only bake.
 
-Two guards, because raw projection transfers whatever the photograph contains,
-faithfully, onto a head that cannot represent it.
+**A learned generator is the default** (`face3d/texgen.py`,
+`runs/texgen_gen`). Projection still exists behind `texgen=False`, and its two
+guards are described below, but a guard is a filter and a filter can only
+remove what it recognises. The generator instead makes the failure
+unreachable: the texture is reconstructed from a 128-vector by a decoder
+trained only on faces, so a pair of spectacle frames is not in its range, and
+the output is a residual over the PCA basis bounded to +/-0.45, so no texel can
+move far from something the basis already considered plausible. The worst
+failure available to it is looking generic.
+
+Trained on 5,738 gated projections from FFHQ, in two stages -- an autoencoder
+first, to establish that a latent this small can hold these textures at all,
+then a photograph-to-latent head warm-started from its decoder.
+
+| masked L1 vs the photograph, 286 held out | |
+|---|---|
+| PCA basis | 0.1497 |
+| generator (ships) | **0.0481** — 67.9% closer |
+| autoencoder (upper bound, sees the target) | 0.0394 — 73.7% closer |
+
+The generator sits close to the autoencoder's ceiling, so predicting the latent
+from a photograph costs little against having the texture itself: the
+bottleneck is the corpus and the representation, not the encoder. Rendered, it
+keeps wrinkles, age and skin tone while dropping the beaded headdress, the
+spectacle frames and the hair blown across a cheek that projection transfers
+faithfully. It is also the fastest path -- no projection, no segmentation --
+at 0.27 s through the HTTP layer.
+
+It is blurrier than projection at its best, which is the trade taken
+deliberately: sacrifice similarity, never produce something weird. Val bottomed
+at epoch 31 and flattened while train kept falling, so more data would help
+before more capacity would.
+
+---
+
+The projection path, still available with `texgen=False`. Two guards, because
+raw projection transfers whatever the photograph contains, faithfully, onto a
+head that cannot represent it.
 
 **Occluders are gated out by segmentation.** Audited over 14 FFHQ faces, 8
 carried one — spectacle frames, a fringe across the forehead, a beaded
