@@ -24,7 +24,8 @@ import torch.nn.functional as F
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d.albedo import CACHE_DIR, FlameTexture
-from face3d.texgen import (TextureAutoencoder, TextureGenerator, masked_loss)
+from face3d.texgen import (TextureAutoencoder, TextureGenerator,
+                           diffuse_fill, masked_loss)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
@@ -118,7 +119,7 @@ class Corpus(torch.utils.data.Dataset):
 
 
 def prepare(batch, tex, eye_off, dev):
-    """Batch -> (photo, residual target, weight), all on device."""
+    """Batch -> (photo, residual target, loss weight, pca), all on device."""
     crop, alb, w, coef, eye = [t.to(dev, non_blocking=True) for t in batch]
     photo = crop.permute(0, 3, 1, 2).float() / 255.0
     alb = alb.permute(0, 3, 1, 2).float() / 255.0
@@ -129,7 +130,13 @@ def prepare(batch, tex, eye_off, dev):
     # procedurally generated iris over them regardless, so anything learned
     # there is overwritten. eye_off is 0 inside the eye discs.
     w = w * eye_off
-    return photo, (alb - pca) * (w > 0), w, pca
+
+    r = (alb - pca) * (w > 0)
+    fill = diffuse_fill(r, w)
+    # Continuous everywhere: the measurement where there is one, its own smooth
+    # continuation where there is not. No step for the decoder to reproduce.
+    target = r * w + fill * (1.0 - w)
+    return photo, target, w, pca
 
 
 def run(a):

@@ -27,12 +27,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 from face3d import assets
 from face3d.albedo import CACHE_DIR, FlameTexture, face_texel_mask, harmonise
-from face3d.project import FACING_MAX, FACING_MIN
-
-# Cut between "detail, take it from the photograph" and "tone, take it from
-# the basis", as a fraction of the texture. See project.frequency_merge.
-MERGE_SIGMA = 0.045
-MERGE_STRENGTH = 0.85
 from face3d.detect import FaceDetector, crop_square
 from face3d.encoder import ResNetEncoder
 from face3d.facemask import eye_faces
@@ -42,8 +36,8 @@ from face3d.landmarks import LandmarkEmbedding
 from face3d.hair import (FACE_SKIN, HAIR, MIN_THICKNESS, HairSegmenter,
                          inflate, measure, project_px, scalp_faces,
                          scalp_region, shell_offset)
-from face3d.project import (composite, frequency_merge, load_static,
-                            project_photo)
+from face3d.project import (FACING_MAX, FACING_MIN, composite,
+                            frequency_merge, load_static, project_photo)
 from face3d.texgen import TextureGenerator
 from face3d.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
 
@@ -55,6 +49,11 @@ CROP_MARGIN = 1.6
 # engines choke well before that, and the tail components move vertices by
 # fractions of a millimetre. 20 + jaw_open is a reasonable rig.
 MORPH_TARGETS = 20
+
+# Cut between "detail, take it from the photograph" and "tone, take it from
+# the basis", as a fraction of the texture. See project.frequency_merge.
+MERGE_SIGMA = 0.045
+MERGE_STRENGTH = 0.85
 
 # Baked texture resolution when projecting the photograph (face3d/project.py).
 # 256 is right for the PCA basis, which has no detail above that scale anyway;
@@ -117,7 +116,7 @@ class Reconstructor:
     # Matched pair. Change both or neither.
     CHECKPOINT = ROOT / "runs" / "deca_open" / "encoder.pt"
     FLAME_MODEL = "FLAME2023Open/flame2023_Open.pkl"
-    TEXGEN = ROOT / "runs" / "texgen_gen" / "model.pt"
+    TEXGEN = ROOT / "runs" / "texgen_gen2" / "model.pt"
 
     def __init__(self, checkpoint=None, device="cpu", flame_model=None,
                  project=True, hair=False, texgen=True):
@@ -447,7 +446,13 @@ class Reconstructor:
         # Without this the basis mean shows through at 27% higher saturation
         # than the subject, and a correct face reads as washed out beside it.
         # Scale the falloff with resolution so it stays the same width of face.
-        if self.face_mask is not None:
+        # Not when the generator is driving. harmonise() replaces everything
+        # outside the face mask with the fitted face's mean tone, which is a
+        # hand-made approximation of exactly what the generator now learns --
+        # it extends the correction over the neck and jaw itself. Applying both
+        # would flatten that extension back to a constant and reinstate the
+        # boundary the extension exists to remove.
+        if self.face_mask is not None and self.texgen is None:
             arr = harmonise(arr, self.face_mask,
                             blur=10.0 * self.tex_res / 256,
                             keep=self.hair_texel if hair else None)

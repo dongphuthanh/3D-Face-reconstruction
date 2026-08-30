@@ -26,8 +26,15 @@ and they are the whole point:
 The residual formulation also matches what was already measured. Detail belongs
 to the photograph and broad tone belongs to the basis (see
 project.frequency_merge); predicting a residual keeps that split by
-construction, and gives a defined, safe target -- zero -- everywhere the
-photograph never saw, which is 80% of the UV map.
+construction.
+
+What it must NOT do is stop at the edge of what the photograph saw, which is
+only ~20% of the UV map. Supervising the rest to zero is the obvious safe
+default and is also, unavoidably, an instruction to paint a face-shaped patch:
+the first model trained that way had mean |residual| of 0.1275 inside the face
+mask against 0.0043 outside, a 30x step, and it read as a mask laid over a
+mannequin. The correction is extended instead of truncated -- see diffuse_fill
+-- so the head is one continuous object.
 
 Two stages, so a failure is diagnosable:
 
@@ -167,6 +174,51 @@ class TextureGenerator(nn.Module):
 
     def forward(self, image):
         return self.dec(self.latent(image))
+
+
+def diffuse_fill(r, w, levels=8):
+    """Extend an observed correction smoothly over the region it never covered.
+
+    A normalised pull: coarsen both the weighted residual and the weight, divide
+    at the coarse level so unobserved texels inherit their observed neighbours,
+    and push the result back up. What comes out is the low-frequency trend of
+    the correction, defined everywhere.
+
+    This exists because of a mistake worth naming. The first version supervised
+    the residual to be ZERO outside the observed region, which is a defensible
+    safety default and also, unavoidably, an instruction to paint a face-shaped
+    patch. Measured on the trained model: mean |residual| was 0.1275 inside the
+    face mask and 0.0043 outside, a 30x step at the mask boundary -- and a step
+    in the correction is a visible edge on the head. The output read as a mask
+    laid over a mannequin rather than as one continuous face.
+
+    The decoder was never the problem. It builds the whole map from a single
+    128-vector through convolutions, so a globally consistent texture is its
+    natural output; the discontinuity came entirely from the target it was
+    given. Extending the correction instead of truncating it lets the neck and
+    the jaw carry the same skin the face got, which is also what harmonise()
+    was approximating by hand.
+    """
+    nums, dens = [r * w], [w]
+    for _ in range(levels):
+        nums.append(F.avg_pool2d(nums[-1], 2))
+        dens.append(F.avg_pool2d(dens[-1], 2))
+
+    # Push back down, each level filling only what the one below it lacks. A
+    # single coarse level cannot do this: coarsen once and a corner far from
+    # any observation still has zero weight, so it divides to zero and the
+    # truncation comes back. Going all the way to 1x1 guarantees every texel
+    # inherits something, and the finer levels override it wherever they have
+    # data of their own.
+    up_n, up_d = nums[-1], dens[-1]
+    for i in range(levels - 1, -1, -1):
+        size = nums[i].shape[-2:]
+        un = F.interpolate(up_n, size=size, mode="bilinear", align_corners=False)
+        ud = F.interpolate(up_d, size=size, mode="bilinear", align_corners=False)
+        a = dens[i].clamp(0, 1)
+        up_n = nums[i] + un * (1 - a)
+        up_d = dens[i] + ud * (1 - a)
+    return up_n / up_d.clamp(min=1e-6)
 
 
 def masked_loss(pred, target, weight, off_weight=0.08, grad_weight=0.5):

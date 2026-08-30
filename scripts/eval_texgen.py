@@ -22,7 +22,8 @@ from PIL import Image
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d.albedo import CACHE_DIR, FlameTexture
-from face3d.texgen import TextureAutoencoder, TextureGenerator
+from face3d.texgen import (TextureAutoencoder, TextureGenerator,
+                           diffuse_fill)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
@@ -78,7 +79,15 @@ def main():
         w = w * eye_off
         with torch.no_grad():
             pca = tex.texture(coef, eye=eye).clamp(0, 1)
-            r = model(crop) if a.stage == "gen" else model((alb - pca) * (w > 0), w)
+            # The autoencoder reads the TARGET, so it must be handed the same
+            # construction training used -- measurement where observed, its own
+            # smooth continuation elsewhere. Feeding it the old truncated
+            # residual instead scored it at -3.5% against the basis, i.e. worse
+            # than predicting nothing, purely from the input distribution
+            # being wrong.
+            rr = (alb - pca) * (w > 0)
+            tgt = rr * w + diffuse_fill(rr, w) * (1 - w)
+            r = model(crop) if a.stage == "gen" else model(tgt, w)
             gen = (pca + r).clamp(0, 1)
         # x3: the numerator sums three colour channels, so the weight
         # denominator must count each texel once per channel or every
@@ -106,7 +115,9 @@ def main():
               / 255) * eye_off
         with torch.no_grad():
             pca = tex.texture(coef, eye=eye).clamp(0, 1)
-            r = model(crop) if a.stage == "gen" else model((alb - pca) * (w1 > 0), w1)
+            rr1 = (alb - pca) * (w1 > 0)
+            tgt1 = rr1 * w1 + diffuse_fill(rr1, w1) * (1 - w1)
+            r = model(crop) if a.stage == "gen" else model(tgt1, w1)
             gen = (pca + r).clamp(0, 1)
 
         def im(t):

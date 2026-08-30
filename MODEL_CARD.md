@@ -234,8 +234,18 @@ then a photograph-to-latent head warm-started from its decoder.
 | masked L1 vs the photograph, 286 held out | |
 |---|---|
 | PCA basis | 0.1497 |
-| generator (ships) | **0.0481** — 67.9% closer |
-| autoencoder (upper bound, sees the target) | 0.0394 — 73.7% closer |
+| generator (ships) | **0.0488** — 67.4% closer |
+| autoencoder (upper bound, sees the target) | 0.0403 — 73.1% closer |
+
+The correction is **continuous over the whole head**, and this is the single
+thing that most changed how the output reads. Supervising the residual to be
+zero outside the observed region is a defensible safety default and also an
+instruction to paint a face-shaped patch: measured on the first trained model,
+mean |residual| was 0.1275 inside the face mask against 0.0043 outside, a 30x
+step, and a step in the correction is a visible edge on the head. It looked
+like a mask laid over a mannequin. The target is now the measurement where
+there is one and its own smooth continuation where there is not, so the neck
+and jaw inherit the same skin the face got. The step ratio is 1.0x.
 
 The generator sits close to the autoencoder's ceiling, so predicting the latent
 from a photograph costs little against having the texture itself: the
@@ -247,8 +257,18 @@ at 0.27 s through the HTTP layer.
 
 It is blurrier than projection at its best, which is the trade taken
 deliberately: sacrifice similarity, never produce something weird. Val bottomed
-at epoch 31 and flattened while train kept falling, so more data would help
+around epoch 33 and flattened while train kept falling, so more data would help
 before more capacity would.
+
+Because the correction now covers the whole head, a strong colour cast in the
+photograph tints the scalp and neck as well as the face. That is the intended
+behaviour -- it is what makes the head one object -- but on a photo lit by, say,
+foliage it reads as a tinted head rather than a tinted face.
+
+`harmonise()` is skipped under the generator. It fills everything outside the
+face mask with the fitted face's mean tone, which is a hand-made approximation
+of what the generator now learns; running both would flatten the extension back
+to a constant and reinstate the boundary it exists to remove.
 
 ---
 
