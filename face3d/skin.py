@@ -1,0 +1,146 @@
+"""A parametric skin layer: named numbers -> texture, differentiably.
+
+Same idea as face3d/eyes.py, which is the proof this works in this project: six
+numbers (iris RGB, sclera RGB) drive a procedurally generated eye, and the
+predicted iris tracks the photographed one at r = +0.822. This does the rest of
+the face -- skin tone, lip colour, brow colour, freckles, creases -- as eleven.
+
+Why bother when a learned decoder already produces a texture. Three reasons,
+and only the third is about quality:
+
+  NAMEABLE   A slider called "lip colour" is a thing a person can move. A 128-
+             vector is not. This is what a game's character creator actually
+             is: a curated parametric space where every combination is valid by
+             construction, rather than a fit that happens to land somewhere
+             plausible.
+
+  BOUNDED    Every parameter is a sigmoid into a fixed range, so there is no
+             setting of them that produces something that is not a face.
+
+  SHARP      An L1-trained decoder is blurry, and not by accident: the
+             minimiser of expected L1 over a distribution of plausible faces IS
+             a blurred face. A procedural lip boundary or freckle field has no
+             such pressure on it. This is the one thing the learned layer
+             cannot be fixed into doing.
+
+What it cannot do is identity. Eleven named numbers will never encode this
+person's particular brow shape or mole. That is what the learned residual
+underneath is still for; this composites on top of it.
+
+REGIONAL OPERATIONS ARE THE HAZARD HERE, and the same one that has bitten this
+project three times: a hard-edged mask composited into a texture is a visible
+outline on the face. Lips and brows are genuinely local and use soft masks that
+fade over several millimetres. Everything else is applied GLOBALLY even when it
+is measured locally -- the skin tone is measured on the skin region and then
+shifted over the whole head, because shifting only inside the region would draw
+its boundary.
+"""
+
+import numpy as np
+import torch
+
+from .albedo import CACHE_DIR
+
+# skin RGB, lip RGB, brow RGB, freckle amount, crease amount
+N_PARAMS = 11
+
+# How far a lip or brow colour is allowed to take over its region. Not 1.0:
+# the underlying texture carries the shading and the lip seam, and replacing it
+# outright gives a flat painted-on mouth.
+LIP_STRENGTH = 0.65
+BROW_STRENGTH = 0.55
+
+# Ceilings on the multiplicative darkening effects.
+FRECKLE_MAX = 0.22
+CREASE_MAX = 0.45
+
+
+def freckle_noise(resolution=256, scale=1.6, seed=0):
+    """A fixed blotch field, freckle-sized. Cached, never per-subject.
+
+    Deterministic on purpose. Re-randomising per request would make the same
+    photograph produce a different face each time it was uploaded, which is the
+    kind of thing nobody notices until a user re-runs their own portrait.
+    """
+    out = CACHE_DIR / f"freckles_{resolution}.npy"
+    if out.exists():
+        return np.load(out)
+
+    from PIL import Image, ImageFilter
+    rng = np.random.default_rng(seed)
+    n = rng.random((resolution, resolution)).astype(np.float32)
+    img = Image.fromarray((n * 255).astype(np.uint8))
+    n = np.asarray(img.filter(ImageFilter.GaussianBlur(scale))).astype(np.float32) / 255.0
+    # Re-normalise, then keep only the upper tail: freckles are sparse spots,
+    # not a texture covering the whole cheek.
+    n = (n - n.mean()) / max(n.std(), 1e-6)
+    n = np.clip((n - 1.0) / 1.5, 0.0, 1.0)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    np.save(out, n.astype(np.float32))
+    return n.astype(np.float32)
+
+
+def split(raw):
+    """(B,N_PARAMS) unbounded -> named, bounded parameters."""
+    s = torch.sigmoid(raw)
+    return {
+        "skin": s[:, 0:3],
+        "lip": s[:, 3:6],
+        "brow": s[:, 6:9],
+        "freckle": s[:, 9:10],
+        "crease": s[:, 10:11],
+    }
+
+
+def region_means(tex, weight, masks):
+    """Weighted mean colour of `tex` inside each named region. (B,3) each.
+
+    The supervision target for the colour parameters, and the reason they end
+    up meaning what they are called. Trained only through the composition loss,
+    "lip colour" would be free to become whatever value happened to reduce the
+    error, which is useless as a slider.
+
+    Excluding lips, brows and eyes from `skin` matters: averaged over a face
+    that still contains them, "skin colour" comes out as a tone nobody has.
+    """
+    out = {}
+    for name, m in masks.items():
+        w = (m[None, None] * weight)                      # (B,1,R,R)
+        out[name] = (tex * w).sum((2, 3)) / w.sum((2, 3)).clamp(min=1e-6)
+    return out
+
+
+def compose(base, params, masks, noise, crease):
+    """base (B,3,R,R) + parameters -> textured (B,3,R,R).
+
+    Order matters. Tone first, so the regional colours land on top of a base
+    already at the right level; then lips and brows, which are local; then the
+    two multiplicative detail fields, which must not be shifted afterwards or
+    they stop looking like marks on skin and start looking like paint.
+    """
+    p = params
+    out = base
+
+    # Skin tone. MEASURED on the skin region, APPLIED to the whole head -- a
+    # shift confined to the region would draw the region's outline.
+    m = masks["skin"][None, None]
+    cur = (out * m).sum((2, 3), keepdim=True) / m.sum((2, 3), keepdim=True).clamp(min=1e-6)
+    out = out + (p["skin"][:, :, None, None] - cur)
+
+    for name, strength in (("lip", LIP_STRENGTH), ("brow", BROW_STRENGTH)):
+        key = "lips" if name == "lip" else "brows"
+        a = masks[key][None, None] * strength
+        out = out * (1 - a) + p[name][:, :, None, None] * a
+
+    # Freckles and creases darken; they never lighten. Applied globally rather
+    # than through a skin mask, because the skin mask is a polygon and its edge
+    # would show. The crease map is already face-shaped and fades on its own.
+    out = out * (1 - noise[None, None] * p["freckle"][:, :, None, None] * FRECKLE_MAX)
+    out = out * (1 - crease[None, None] * p["crease"][:, :, None, None] * CREASE_MAX)
+    return out.clamp(0.0, 1.0)
+
+
+def default_params(batch=1, device="cpu"):
+    """Mid-range everything: the identity setting, near enough."""
+    raw = torch.zeros(batch, N_PARAMS, device=device)
+    return raw

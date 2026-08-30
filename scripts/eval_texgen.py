@@ -22,6 +22,9 @@ from PIL import Image
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d.albedo import CACHE_DIR, FlameTexture
+from face3d.regions import crease_map, region_masks
+from face3d.skin import compose as skin_compose
+from face3d.skin import freckle_noise, split as skin_split
 from face3d.texgen import (TextureAutoencoder, TextureGenerator,
                            diffuse_fill)
 
@@ -54,7 +57,15 @@ def main():
     else:
         model = TextureGenerator(ck["latent"], 256, ck["width"],
                                  pretrained=False).to(DEV)
-    model.load_state_dict(ck["model"])
+    missing, unexpected = model.load_state_dict(ck["model"], strict=False)
+    # Checkpoints trained before the procedural layer have no params head. They
+    # are still worth evaluating -- that is the whole point of comparing them --
+    # so tolerate the gap and skip the composition rather than refuse to load.
+    if missing:
+        print(f"note: checkpoint predates {sorted(set(m.split('.')[0] for m in missing))}"
+              f"; that part is skipped")
+    if unexpected:
+        raise RuntimeError(f"checkpoint has unexpected keys: {unexpected[:4]}")
     model.eval()
     if ck["stage"] != a.stage:
         print(f"WARNING: checkpoint is stage {ck['stage']}, asked for {a.stage}")
@@ -63,8 +74,38 @@ def main():
     tex = FlameTexture(CACHE_DIR / "flame_texture_256_50.npz", device=DEV)
     from face3d import assets
     from face3d.flame_torch import FlameTorch
-    tex.attach_eyes(FlameTorch(assets.model_path("FLAME2023Open/flame2023_Open.pkl")).to(DEV))
+    flame_for_eyes = FlameTorch(
+        assets.model_path("FLAME2023Open/flame2023_Open.pkl")).to(DEV)
+    tex.attach_eyes(flame_for_eyes)
     eye_off = (1.0 - tex.eye_alpha).to(DEV)
+
+    # The procedural layer, when the checkpoint has one. Older checkpoints
+    # predate it and are still comparable -- they simply skip the composition.
+    procedural = a.stage == "gen" and any(k.startswith("params.")
+                                          for k in ck["model"])
+    if procedural:
+        from face3d.landmarks import LandmarkEmbedding
+        from face3d.project import load_static
+        emb = LandmarkEmbedding(ROOT / "mediapipe_landmark_embedding" /
+                                "mediapipe_landmark_embedding.npz", device=DEV)
+        with np.load(CACHE_DIR / "flame_texture_256_50.npz") as dd:
+            vt, ft = dd["vt"].astype(np.float32), dd["ft"].astype(np.int64)
+        st = load_static(flame_for_eyes, vt, ft, resolution=256, device=DEV)
+        masks = {k: v.to(DEV).float() for k, v in
+                 region_masks(flame_for_eyes, emb, st, device=DEV).items()}
+        noise = torch.as_tensor(freckle_noise(256), device=DEV)
+        crease = torch.as_tensor(
+            crease_map(ROOT / "data" / "texgen_cache", st, 256), device=DEV)
+    print(f"procedural skin layer: {procedural}")
+
+    def predict(crop, tgt, wt, pca):
+        if a.stage == "ae":
+            return (pca + model(tgt, wt)).clamp(0, 1)
+        res, raw = model(crop)
+        base = (pca + res).clamp(0, 1)
+        if not procedural:
+            return base
+        return skin_compose(base, skin_split(raw), masks, noise, crease)
 
     # --- numbers over the whole held-out split ---------------------------
     tot = {"pca": 0.0, "gen": 0.0}
@@ -87,8 +128,7 @@ def main():
             # being wrong.
             rr = (alb - pca) * (w > 0)
             tgt = rr * w + diffuse_fill(rr, w) * (1 - w)
-            r = model(crop) if a.stage == "gen" else model(tgt, w)
-            gen = (pca + r).clamp(0, 1)
+            gen = predict(crop, tgt, w, pca)
         # x3: the numerator sums three colour channels, so the weight
         # denominator must count each texel once per channel or every
         # figure here is inflated threefold.
@@ -117,8 +157,7 @@ def main():
             pca = tex.texture(coef, eye=eye).clamp(0, 1)
             rr1 = (alb - pca) * (w1 > 0)
             tgt1 = rr1 * w1 + diffuse_fill(rr1, w1) * (1 - w1)
-            r = model(crop) if a.stage == "gen" else model(tgt1, w1)
-            gen = (pca + r).clamp(0, 1)
+            gen = predict(crop, tgt1, w1, pca)
 
         def im(t):
             return Image.fromarray(

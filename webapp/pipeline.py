@@ -38,6 +38,9 @@ from face3d.hair import (FACE_SKIN, HAIR, MIN_THICKNESS, HairSegmenter,
                          scalp_region, shell_offset)
 from face3d.project import (FACING_MAX, FACING_MIN, composite,
                             frequency_merge, load_static, project_photo)
+from face3d.regions import crease_map, region_masks
+from face3d.skin import compose as skin_compose
+from face3d.skin import freckle_noise, split as skin_split
 from face3d.texgen import TextureGenerator
 from face3d.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
 
@@ -86,6 +89,10 @@ HAIR_RATIO = CROP_MARGIN / HAIR_MARGIN
 # to match the photograph.
 SEG_SIZE = 512
 
+# Resolution the procedural skin layer composes at. Must match what the
+# generator was trained against -- see the note where it is loaded.
+SKIN_RES = 256
+
 
 class NoFaceFound(Exception):
     """No face in the image. A USER error, not a server fault -- the caller
@@ -116,7 +123,7 @@ class Reconstructor:
     # Matched pair. Change both or neither.
     CHECKPOINT = ROOT / "runs" / "deca_open" / "encoder.pt"
     FLAME_MODEL = "FLAME2023Open/flame2023_Open.pkl"
-    TEXGEN = ROOT / "runs" / "texgen_gen2" / "model.pt"
+    TEXGEN = ROOT / "runs" / "texgen_gen5" / "model.pt"
 
     def __init__(self, checkpoint=None, device="cpu", flame_model=None,
                  project=True, hair=False, texgen=True):
@@ -129,6 +136,13 @@ class Reconstructor:
         # exclude. It is also much faster -- no projection, no segmentation.
         self.texgen = None
         self.texgen_path = texgen
+        self.skin_masks = None
+        self.freckles = None
+        self.crease = None
+        # Parameters predicted for the most recent reconstruction, so a caller
+        # can read what the photograph implied before overriding any of it.
+        self.last_params = None
+        self.skin_procedural = False
         # OFF by default. The shell is a cap fitted to one view's silhouette,
         # and on real photographs it reads worse than leaving the head bald --
         # it cannot follow a hairstyle, so it lands in the valley between "no
@@ -271,10 +285,38 @@ class Reconstructor:
                 ck = torch.load(path, map_location=device)
                 self.texgen = TextureGenerator(ck["latent"], 256, ck["width"],
                                                pretrained=False).to(device)
-                self.texgen.load_state_dict(ck["model"])
+                # Checkpoints trained before the procedural layer have no
+                # params head. Load what is there and compose only when the
+                # weights to drive it exist -- a strict load would raise a bare
+                # "Missing key(s)" that says nothing about what to do.
+                missing, unexpected = self.texgen.load_state_dict(ck["model"],
+                                                                  strict=False)
+                if unexpected:
+                    raise RuntimeError(
+                        f"texture generator {path} has unexpected weights "
+                        f"{unexpected[:4]}; it does not match this code")
+                self.skin_procedural = not any(m.startswith("params.")
+                                               for m in missing)
                 self.texgen.eval()
                 print(f"    texture generator: {path.parent.name} "
                       f"(val {ck['val']:.5f})", flush=True)
+
+                # Fixed inputs for the procedural layer, at the resolution the
+                # generator was TRAINED at, not the bake resolution. The
+                # freckle field is a specific noise image and the model learned
+                # an amount against it; regenerating it larger would be a
+                # different field, and the amount would no longer mean the same
+                # thing. Compose at 256, upsample the result.
+                st = load_static(self.flame, vt, ft, resolution=SKIN_RES,
+                                 device=device)
+                self.skin_masks = {k: v.to(device).float() for k, v in
+                                   region_masks(self.flame, emb, st,
+                                                device=device).items()}
+                self.freckles = torch.as_tensor(freckle_noise(SKIN_RES),
+                                                device=device)
+                self.crease = torch.as_tensor(
+                    crease_map(ROOT / "data" / "texgen_cache", st, SKIN_RES),
+                    device=device)
 
         # MediaPipe graphs are stateful and NOT safe to share across threads.
         # FastAPI runs sync handlers in a worker threadpool, so two concurrent
@@ -362,7 +404,8 @@ class Reconstructor:
         return uv
 
     def _bake_texture(self, albedo, eye=None, photo=None, params=None,
-                      verts=None, hair=False, photo_mask=None, crop=None):
+                      verts=None, hair=False, photo_mask=None, crop=None,
+                      skin_override=None):
         """Albedo coefficients (+ optionally the photograph) -> PNG bytes.
 
         Two sources, layered. FlameTexture.texture() evaluates
@@ -381,23 +424,43 @@ class Reconstructor:
             # albedo is (50,); texture() wants a batch, hence [None] -> (1,50).
             tex = self.texture.texture(albedo[None].to(self.device),
                                        eye=eye[None].to(self.device))
+
+            if self.texgen is not None and crop is not None:
+                # Learned residual, then the procedural layer on top of it --
+                # the same order as training, at the same resolution as
+                # training. Composing at the bake resolution instead would put
+                # the freckle field on a different noise image from the one the
+                # predicted amount was learned against.
+                res, raw = self.texgen(crop.to(self.device))
+                self.last_params = skin_split(raw)
+                p = dict(self.last_params)
+                if skin_override:
+                    # The character-creator hook: any named parameter can be
+                    # replaced without touching the rest of the face.
+                    for k, v in skin_override.items():
+                        if k not in p:
+                            raise KeyError(
+                                f"unknown skin parameter {k!r}; have "
+                                f"{sorted(p)}")
+                        p[k] = torch.as_tensor(
+                            v, dtype=res.dtype, device=self.device
+                        ).reshape(1, -1)
+                # Unclamped into compose(), which clamps once at the end.
+                # The residual deliberately overshoots where the procedural
+                # layer will darken; clipping between them leaves the overshoot
+                # and removes the correction, which showed as white arcs above
+                # the brows.
+                tex = tex + res
+                if self.skin_procedural:
+                    tex = skin_compose(tex, p, self.skin_masks,
+                                       self.freckles, self.crease)
+                tex = tex.clamp(0, 1)
+
             if tex.shape[-1] != self.tex_res:
                 tex = F.interpolate(tex, size=(self.tex_res, self.tex_res),
                                     mode="bilinear", align_corners=False)
             # (1,3,R,R) -> (R,R,3), the layout everything downstream expects.
             base = tex[0].permute(1, 2, 0).clamp(0, 1)
-
-            # The learned generator predicts a bounded residual over the basis
-            # at 256, whatever the bake resolution. Upsampling a residual is
-            # safe in a way upsampling a texture is not: it carries no absolute
-            # colour, so a soft edge in it cannot introduce a seam -- it can
-            # only soften a correction that was already smooth.
-            if self.texgen is not None and crop is not None:
-                r = self.texgen(crop.to(self.device))
-                if r.shape[-1] != self.tex_res:
-                    r = F.interpolate(r, size=(self.tex_res, self.tex_res),
-                                      mode="bilinear", align_corners=False)
-                base = (base + r[0].permute(1, 2, 0)).clamp(0, 1)
 
             w = None
             if photo is not None and self.static is not None and self.texgen is None:
@@ -470,7 +533,8 @@ class Reconstructor:
         """
         return glb_bytes(*self.build(image_bytes))
 
-    def build(self, image_bytes: bytes, targets: int = MORPH_TARGETS):
+    def build(self, image_bytes: bytes, targets: int = MORPH_TARGETS,
+              skin_override=None):
         """Photograph -> (gltf dict, binary blob), the pieces before packing.
 
         Split out from reconstruct() so scripts/export_head.py can write .gltf
@@ -626,7 +690,8 @@ class Reconstructor:
         tex_png = self._bake_texture(p.albedo[0], p.eye[0], photo=photo,
                                      params=p, verts=verts,
                                      hair=hair_off is not None,
-                                     photo_mask=photo_mask, crop=x)
+                                     photo_mask=photo_mask, crop=x,
+                                     skin_override=skin_override)
 
         # --- 9. assemble ------------------------------------------------------
         # build_gltf returns (json_dict, binary_blob); glb_bytes packs them into

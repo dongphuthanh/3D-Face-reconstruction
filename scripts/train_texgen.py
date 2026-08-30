@@ -24,6 +24,8 @@ import torch.nn.functional as F
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from face3d.albedo import CACHE_DIR, FlameTexture
+from face3d.regions import crease_map, region_masks
+from face3d.skin import compose, freckle_noise, region_means, split
 from face3d.texgen import (TextureAutoencoder, TextureGenerator,
                            diffuse_fill, masked_loss)
 
@@ -139,6 +141,51 @@ def prepare(batch, tex, eye_off, dev):
     return photo, target, w, pca
 
 
+def step(model, a, photo, target, w, pca, masks, noise, crease, colour_keys):
+    """One forward pass and its loss, shared by train and val.
+
+    Stage 1 has no procedural layer -- it exists to answer whether the latent
+    can hold the textures, and adding a second mechanism to that question
+    would make the answer un-attributable.
+
+    Stage 2 is scored on the COMPOSED texture, not on the residual, because
+    the composition is what ships. The colour parameters additionally get a
+    direct target: the mean colour of the region they are named after. Without
+    that they would be free to take any value that happened to reduce the image
+    error, and "lip colour" would stop meaning lip colour -- which is the whole
+    reason for having named parameters instead of another 11 latent dimensions.
+    """
+    if a.stage == "ae":
+        pred = model(target, w)
+        return masked_loss(pred.float(), target, w, off_weight=a.off_weight)
+
+    res, raw = model(photo)
+    p = split(raw.float())
+    # NOT clamped before composing. The procedural layer darkens brows, lips
+    # and creases, so the residual learns to pre-brighten them and let the
+    # composition bring them back down. Clipping between the two breaks exactly
+    # that cancellation: the residual is cut at 1.0, the darkening still
+    # applies, and what survives is a white arc over each brow. compose()
+    # clamps once at the end, which is the only place it is safe to.
+    pred_tex = compose(pca + res.float(), p, masks, noise, crease)
+    target_tex = (pca + target).clamp(0, 1)
+    loss, l1, g = masked_loss(pred_tex, target_tex, w, off_weight=a.off_weight)
+
+    # A light pull toward doing nothing. Cancellation between the two layers is
+    # legitimate but it is also free, and left unpriced the residual drifts
+    # into large opposing corrections that only agree where the masks are exact
+    # -- so the seams of the procedural masks start to show in the residual.
+    loss = loss + a.res_penalty * res.float().abs().mean()
+
+    with torch.no_grad():
+        want = region_means(target_tex, w, {k: masks[k] for k in
+                                            ("skin", "lips", "brows")})
+    aux = (  (p["skin"] - want["skin"]).abs().mean()
+           + (p["lip"] - want["lips"]).abs().mean()
+           + (p["brow"] - want["brows"]).abs().mean())
+    return loss + a.aux_weight * aux, l1, g
+
+
 def run(a):
     cache_dir = ROOT / "data" / "texgen_cache"
     n = build_memmap(ROOT / "data" / "texgen", cache_dir)
@@ -155,6 +202,21 @@ def run(a):
     flame = FlameTorch(assets.model_path("FLAME2023Open/flame2023_Open.pkl")).to(DEV)
     tex.attach_eyes(flame)
     eye_off = (1.0 - tex.eye_alpha).to(DEV)                 # (1,1,256,256)
+
+    # The procedural layer's fixed inputs. Topology and corpus only, so they
+    # are built once and shared by every sample.
+    from face3d.landmarks import LandmarkEmbedding
+    from face3d.project import load_static
+    emb = LandmarkEmbedding(ROOT / "mediapipe_landmark_embedding" /
+                            "mediapipe_landmark_embedding.npz", device=DEV)
+    with np.load(CACHE_DIR / "flame_texture_256_50.npz") as d:
+        vt, ft = d["vt"].astype(np.float32), d["ft"].astype(np.int64)
+    static = load_static(flame, vt, ft, resolution=256, device=DEV)
+    masks = {k: v.to(DEV).float() for k, v in
+             region_masks(flame, emb, static, device=DEV).items()}
+    noise = torch.as_tensor(freckle_noise(256), device=DEV)
+    crease = torch.as_tensor(crease_map(cache_dir, static, 256), device=DEV)
+    colour_keys = ("skin", "lip", "brow")
 
     mk = lambda idx, sh: torch.utils.data.DataLoader(
         Corpus(cache_dir, idx), batch_size=a.batch, shuffle=sh,
@@ -182,11 +244,10 @@ def run(a):
         model.train()
         t0, tot, seen = time.time(), 0.0, 0
         for batch in train_dl:
-            photo, target, w, _ = prepare(batch, tex, eye_off, DEV)
+            photo, target, w, pca = prepare(batch, tex, eye_off, DEV)
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
-                pred = model(target, w) if a.stage == "ae" else model(photo)
-                loss, l1, g = masked_loss(pred.float(), target, w,
-                                          off_weight=a.off_weight)
+                loss, l1, g = step(model, a, photo, target, w, pca,
+                                   masks, noise, crease, colour_keys)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -199,10 +260,9 @@ def run(a):
         vtot, vseen, vl1 = 0.0, 0, 0.0
         with torch.no_grad():
             for batch in val_dl:
-                photo, target, w, _ = prepare(batch, tex, eye_off, DEV)
-                pred = model(target, w) if a.stage == "ae" else model(photo)
-                loss, l1, g = masked_loss(pred.float(), target, w,
-                                          off_weight=a.off_weight)
+                photo, target, w, pca = prepare(batch, tex, eye_off, DEV)
+                loss, l1, g = step(model, a, photo, target, w, pca,
+                                   masks, noise, crease, colour_keys)
                 vtot += float(loss) * len(photo)
                 vl1 += float(l1) * len(photo)
                 vseen += len(photo)
@@ -227,7 +287,13 @@ if __name__ == "__main__":
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--latent", type=int, default=128)
     ap.add_argument("--width", type=int, default=32)
-    ap.add_argument("--off-weight", type=float, default=0.08)
+    ap.add_argument("--off-weight", type=float, default=0.35)
+    ap.add_argument("--res-penalty", type=float, default=0.08,
+                    help="price on the learned residual, so it does not "
+                         "pre-compensate for the procedural layer")
+    ap.add_argument("--aux-weight", type=float, default=0.5,
+                    help="pull on the named colour parameters toward the mean "
+                         "colour of the region they are named after")
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--init", default="")
     ap.add_argument("--out", default="")

@@ -53,6 +53,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
+from .skin import N_PARAMS
+
 # Hard ceiling on how far a texel may move from the basis, in [0,1] colour.
 # 0.45 is enough for an eyebrow against forehead skin (measured ~0.25 in the
 # corpus) with headroom, and far too little to paint a black spectacle frame
@@ -165,15 +167,25 @@ class TextureGenerator(nn.Module):
         trunk.fc = nn.Identity()
         self.trunk = trunk
         self.head = nn.Linear(self.feat_dim, latent)
+        # The named parameters of the procedural layer (face3d/skin.py) come
+        # off the SAME trunk features as the latent. They describe the same
+        # face, and giving them their own backbone would double the cost to
+        # learn the same thing twice.
+        self.params = nn.Linear(self.feat_dim, N_PARAMS)
         self.dec = TextureDecoder(latent, res, width)
         self.register_buffer("mean", torch.tensor(self.MEAN).view(1, 3, 1, 1))
         self.register_buffer("std", torch.tensor(self.STD).view(1, 3, 1, 1))
 
+    def features(self, image):
+        return self.trunk((image - self.mean) / self.std)
+
     def latent(self, image):
-        return self.head(self.trunk((image - self.mean) / self.std))
+        return self.head(self.features(image))
 
     def forward(self, image):
-        return self.dec(self.latent(image))
+        """-> (residual (B,3,R,R), skin parameters (B,N_PARAMS) unbounded)."""
+        f = self.features(image)
+        return self.dec(self.head(f)), self.params(f)
 
 
 def diffuse_fill(r, w, levels=8):
@@ -225,10 +237,15 @@ def masked_loss(pred, target, weight, off_weight=0.08, grad_weight=0.5):
     """L1 on the residual, weighted by confidence, plus a gradient term.
 
     `off_weight` is what the model is told outside the observed region, and it
-    is not a detail: 80% of the UV map is never seen by any one photograph. The
-    target there is ZERO residual -- fall back to the basis -- which is the only
-    honest answer and also the safe one. Left unsupervised the decoder would be
-    free to emit anything over four fifths of its own output.
+    is not a detail: 80% of the UV map is never seen by any one photograph.
+
+    It also must not be small. Once diffuse_fill gave that region a real target
+    rather than a zero, weighting it at 0.08 left errors there almost free, and
+    the residual overshot exactly where the weight fell away -- a bright ring
+    following the face contour, plainly visible in the model output while the
+    target it was trained on had nothing of the kind. The fill is a considered
+    continuation, not a guess to be tiptoed around, so it is supervised
+    properly.
 
     The gradient term exists because plain L1 has a known and visible failure:
     the minimiser of an expected L1 error over a distribution of plausible

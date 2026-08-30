@@ -234,8 +234,13 @@ then a photograph-to-latent head warm-started from its decoder.
 | masked L1 vs the photograph, 286 held out | |
 |---|---|
 | PCA basis | 0.1497 |
-| generator (ships) | **0.0488** — 67.4% closer |
+| generator + procedural layer (ships) | **0.0594** — 60.3% closer |
+| generator alone, no named parameters | 0.0488 — 67.4% closer |
 | autoencoder (upper bound, sees the target) | 0.0403 — 73.1% closer |
+
+The procedural layer costs ~7 points of pixel fidelity and buys editability —
+see below. Judge it on renders: this metric rewards matching pixels and cannot
+see a slider.
 
 The correction is **continuous over the whole head**, and this is the single
 thing that most changed how the output reads. Supervising the residual to be
@@ -254,6 +259,40 @@ keeps wrinkles, age and skin tone while dropping the beaded headdress, the
 spectacle frames and the hair blown across a cheek that projection transfers
 faithfully. It is also the fastest path -- no projection, no segmentation --
 at 0.27 s through the HTTP layer.
+
+## Named skin parameters
+
+Eleven numbers on top of the learned texture (`face3d/skin.py`), predicted from
+the same trunk: **skin RGB, lip RGB, brow RGB, freckle amount, crease amount**.
+`Reconstructor.build(..., skin_override={...})` replaces any of them without
+touching the rest, and `last_params` reports what the photograph implied. This
+is the character-creator half: a curated parametric space where every setting
+is valid by construction, rather than a fit that happens to land somewhere
+plausible.
+
+The colour parameters are supervised directly against the mean colour of the
+region they are named after, which is what makes them mean what they are
+called. Trained only through image error they would drift to whatever value
+reduced the loss, and "lip colour" would stop being lip colour -- useless as a
+slider.
+
+Regions come from the MediaPipe landmark embedding already on disk: all 40 lip
+and 20 brow landmarks are among the 105 embedded, so those regions are exact.
+The nose is only half covered and so has no region. The crease map is derived
+from the corpus rather than authored -- averaging the darkening half of the
+high-frequency residual over 800 faces leaves where creases land in most people
+and averages away what was specific to any one of them.
+
+REGIONAL OPERATIONS ARE THE HAZARD. Skin tone is measured on the skin region
+and applied to the WHOLE head; confining the shift to the region would draw its
+boundary, which is the same failure as the polygon edge across the forehead and
+the face-shaped patch. Only lips and brows are regional, and both fade over
+several millimetres.
+
+The freckle field is a fixed noise image, never re-randomised: the same
+photograph must not produce a different face on each upload.
+
+## Trade-offs
 
 It is blurrier than projection at its best, which is the trade taken
 deliberately: sacrifice similarity, never produce something weird. Val bottomed
