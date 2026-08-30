@@ -315,6 +315,17 @@ photograph tints the scalp and neck as well as the face. That is the intended
 behaviour -- it is what makes the head one object -- but on a photo lit by, say,
 foliage it reads as a tinted head rather than a tinted face.
 
+Regions no frontal camera could have seen -- under the jaw, round the back --
+are settled toward the skin tone measured on this person. Left alone the
+underside of the jaw reached 1.68x the face's mean brightness on the worst of 30
+subjects and saturated to near-white, from two causes that compound: the PCA
+basis is itself bright there (1.29x against 0.97x for others, because the
+texture space was built from photographs and almost nobody photographs under a
+jaw), and diffuse_fill then extends the face's correction there additively with
+no knowledge that the base has no headroom left. Now max 1.21x, median 1.10x.
+The mask is by surface ORIENTATION, not by the face polygon -- face_texel_mask
+includes the under-jaw, so keying it there applied at a quarter strength.
+
 `harmonise()` is skipped under the generator. It fills everything outside the
 face mask with the fitted face's mean tone, which is a hand-made approximation
 of what the generator now learns; running both would flatten the extension back

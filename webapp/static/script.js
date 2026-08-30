@@ -109,6 +109,7 @@ let camera;
 let renderer;
 let controls;
 let currentModel = null;
+let keyLight = null;
 
 function initThree() {
     const container = document.getElementById("viewer");
@@ -220,6 +221,7 @@ function initThree() {
     // brightness. Environment and lights are additive, and treating them as
     // independent is how a scene ends up washed out.
     const key = new THREE.DirectionalLight(0xffffff, 0.7);
+    keyLight = key;                            // frameObject fits its shadow
     key.position.set(0.6, 0.9, 1.2);          // front, above, slightly right
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
@@ -267,6 +269,42 @@ function frameObject(object) {
     const maxDim = Math.max(size.x, size.y, size.z);
     const fovRad = THREE.MathUtils.degToRad(camera.fov);
     const distance = (maxDim / 2) / Math.tan(fovRad / 2);
+
+    // Fit the KEY LIGHT'S SHADOW CAMERA to the model too. This is the same
+    // argument as the camera framing above, and leaving it out is what put a
+    // pale crescent under the chin.
+    //
+    // A DirectionalLight's shadow camera defaults to a +/-5 unit box. The head
+    // is 0.31 units tall, so a 1024x1024 shadow map spent about 30 pixels on
+    // the whole model -- far too coarse to resolve the contact shadow the chin
+    // casts on the neck. The key sits front-above, and the front underside of
+    // the jaw genuinely faces it (n.L is positive there), so with the shadow
+    // missing that band was simply lit: a bright crescent exactly where a
+    // shadow belonged.
+    //
+    // The light's target matters as much. It defaults to the origin while the
+    // head sits above it, which tilts the light away from where it was aimed.
+    if (keyLight) {
+        const r = maxDim * 0.75;
+        keyLight.position.set(centre.x + r * 0.6,
+                              centre.y + r * 0.9,
+                              centre.z + r * 1.2);
+        keyLight.target.position.copy(centre);
+        scene.add(keyLight.target);
+
+        const sc = keyLight.shadow.camera;
+        sc.left = -r; sc.right = r;
+        sc.top = r;   sc.bottom = -r;
+        sc.near = r * 0.05;
+        sc.far = r * 6;
+        sc.updateProjectionMatrix();
+
+        // normalBias offsets along the surface normal and scales with the
+        // model; the old constant depth bias was tuned against the wrong
+        // frustum and pushes contact shadows away from what casts them.
+        keyLight.shadow.bias = 0;
+        keyLight.shadow.normalBias = maxDim * 0.01;
+    }
 
     camera.position.set(centre.x, centre.y, centre.z + distance * 1.6);
 

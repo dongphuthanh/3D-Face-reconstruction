@@ -150,6 +150,48 @@ def compose(base, params, masks, noise, crease):
     return out.clamp(0.0, 1.0)
 
 
+def settle_unobserved(tex, skin_mask, unobserved, strength=0.8, factor=1.06):
+    """Calm the parts of the head no frontal camera could have seen.
+
+    Measured over 30 subjects, the underside of the jaw reached 1.68x the face's
+    mean brightness and saturated to near-white on the worst of them. Two causes
+    compound there, neither visible from the front:
+
+      The PCA basis is already bright under the chin for some subjects -- 1.29x
+      against 0.97x for others -- because the texture space was built from
+      photographs and almost nobody photographs under a jaw.
+
+      diffuse_fill then extends the face's correction over that region as an
+      ADDITIVE shift, with no way to know the base underneath is already near
+      the top of its range. A subject who needs brightening gets it applied
+      where there is no headroom, and it clips.
+
+    Capping the level alone was not enough, and the reason is worth keeping: it
+    scales the brightness down but preserves the EDGE, and an edge is what reads
+    as a patch rather than as shading. The crescent was structure invented for a
+    region we have no information about.
+
+    So settle it toward the one colour actually measured on this person -- the
+    same argument as harmonise(), keyed on surface orientation instead of a
+    polygon so it cannot draw its own outline. The remaining structure is capped
+    by luminance, scaled rather than clipped so hue survives.
+
+    Nothing here touches the face: `unobserved` is ~0.09 there and ~0.86 under
+    the chin.
+    """
+    m = skin_mask[None, None]
+    ref = (tex * m).sum((2, 3), keepdim=True) / m.sum((2, 3), keepdim=True).clamp(min=1e-6)
+
+    a = (unobserved[None, None] * strength).clamp(0.0, 1.0)
+    out = tex * (1 - a) + ref * a
+
+    lum = out.mean(1, keepdim=True)
+    ceiling = ref.mean(1, keepdim=True) * factor
+    scale = (ceiling / lum.clamp(min=1e-4)).clamp(max=1.0)
+    scale = 1.0 + (scale - 1.0) * unobserved[None, None]
+    return (out * scale).clamp(0.0, 1.0)
+
+
 def default_params(batch=1, device="cpu"):
     """Mid-range everything: the identity setting, near enough."""
     raw = torch.zeros(batch, N_PARAMS, device=device)

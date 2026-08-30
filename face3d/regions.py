@@ -112,6 +112,44 @@ def region_masks(flame, embedding, static, device="cpu"):
     return {k: torch.as_tensor(v, device=device) for k, v in out.items()}
 
 
+def unobserved_mask(flame, static, device="cpu"):
+    """(R,R) in 0-1: how unlikely a texel is to appear in a frontal photograph.
+
+    Derived from surface ORIENTATION, not from proximity to the face. The
+    obvious candidate, face_texel_mask, is the wrong tool and quietly so: it
+    keeps vertices within 45 mm of a landmark whose normal faces forward, and
+    the underside of the jaw satisfies both. Measured, it covered the
+    under-chin at 0.74, so a cap keyed to "outside the face" applied there at a
+    quarter strength and barely moved the very region it was written for.
+
+    What actually decides whether a camera in front of a face saw a patch of
+    skin is which way that patch points. Downward-facing surfaces are hidden
+    under the jaw; backward-facing ones are round the back of the head. Both
+    fade in smoothly, so nothing here draws an edge.
+    """
+    from .render import vertex_normals
+
+    cache = CACHE_DIR / f"unobserved_{static[0].shape[0]}.npy"
+    if cache.exists():
+        return torch.as_tensor(np.load(cache), device=device)
+
+    from .render import interpolate
+    with torch.no_grad():
+        v, _ = flame(batch_size=1)
+        n = torch.nn.functional.normalize(
+            vertex_normals(v, flame.faces), dim=-1)
+    fid, bary = static[0].cpu(), static[1].cpu()
+    N = interpolate(n.cpu(), flame.faces.cpu(), fid[None], bary[None])[0].numpy()
+    N /= np.linalg.norm(N, axis=-1, keepdims=True) + 1e-9
+
+    down = _smoothstep(-N[..., 1], 0.15, 0.55)
+    back = _smoothstep(-N[..., 2], 0.10, 0.50)
+    m = np.maximum(down, back).astype(np.float32)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    np.save(cache, m)
+    return torch.as_tensor(m, device=device)
+
+
 def crease_map(cache_dir, static, resolution=256, limit=1500):
     """Where faces are commonly darker at high frequency. (R,R) in 0-1. Cached.
 

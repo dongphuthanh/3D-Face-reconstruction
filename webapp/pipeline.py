@@ -38,9 +38,9 @@ from face3d.hair import (FACE_SKIN, HAIR, MIN_THICKNESS, HairSegmenter,
                          scalp_region, shell_offset)
 from face3d.project import (FACING_MAX, FACING_MIN, composite,
                             frequency_merge, load_static, project_photo)
-from face3d.regions import crease_map, region_masks
+from face3d.regions import crease_map, region_masks, unobserved_mask
 from face3d.skin import compose as skin_compose
-from face3d.skin import freckle_noise, split as skin_split
+from face3d.skin import freckle_noise, settle_unobserved, split as skin_split
 from face3d.texgen import TextureGenerator
 from face3d.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
 
@@ -143,6 +143,7 @@ class Reconstructor:
         # can read what the photograph implied before overriding any of it.
         self.last_params = None
         self.skin_procedural = False
+        self.outside_face = None
         # OFF by default. The shell is a cap fitted to one view's silhouette,
         # and on real photographs it reads worse than leaving the head bald --
         # it cannot follow a hairstyle, so it lands in the valley between "no
@@ -315,6 +316,11 @@ class Reconstructor:
                                                 device=device).items()}
                 self.freckles = torch.as_tensor(freckle_noise(SKIN_RES),
                                                 device=device)
+                # Where a frontal camera cannot have seen the surface. By
+                # ORIENTATION -- face_texel_mask includes the under-jaw, so
+                # keying this to "outside the face" left it at 0.26 there.
+                self.outside_face = unobserved_mask(self.flame, st,
+                                                    device=device)
                 self.crease = torch.as_tensor(
                     crease_map(ROOT / "data" / "texgen_cache", st, SKIN_RES),
                     device=device)
@@ -494,6 +500,9 @@ class Reconstructor:
                 if self.skin_procedural:
                     tex = skin_compose(tex, p, self.skin_masks,
                                        self.freckles, self.crease)
+                    # Nothing the camera never saw may outrun the skin it did.
+                    tex = settle_unobserved(tex, self.skin_masks["skin"],
+                                            self.outside_face)
                 tex = tex.clamp(0, 1)
 
             if tex.shape[-1] != self.tex_res:
