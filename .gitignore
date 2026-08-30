@@ -92,3 +92,8 @@ venv/
 *.egg-info/
 .vscode/
 .idea/
+
+# Texture-generator corpus: derived from FFHQ, ~2 GB of uint8 shards.
+data/texgen/
+data/texgen_cache/
+runs/texgen*/

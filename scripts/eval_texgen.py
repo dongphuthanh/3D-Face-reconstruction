@@ -1,0 +1,127 @@
+"""Compare the three texture sources on held-out faces.
+
+    python scripts/eval_texgen.py --model runs/texgen_gen/model.pt
+
+Numbers and a contact sheet, because the two answer different questions. The
+number says how close each source gets to the observed photograph; the sheet
+says whether the failures are the kind a person minds. A model can win on masked
+L1 by being smoothly wrong everywhere and still look worse than one that is
+sharp and occasionally off.
+
+The comparison is on the SAME held-out split the trainer used (seed 0), so the
+generator has not seen any of these.
+"""
+
+import argparse
+import pathlib
+import sys
+
+import numpy as np
+import torch
+from PIL import Image
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from face3d.albedo import CACHE_DIR, FlameTexture
+from face3d.texgen import TextureAutoencoder, TextureGenerator
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+DEV = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default=str(ROOT / "runs" / "texgen_gen" / "model.pt"))
+    ap.add_argument("--cache", default=str(ROOT / "data" / "texgen_cache"))
+    ap.add_argument("--n", type=int, default=10)
+    ap.add_argument("--out", default=str(ROOT / "out" / "texgen_eval.png"))
+    ap.add_argument("--stage", choices=["ae", "gen"], default="gen",
+                    help="ae reads the texture itself, so it measures whether "
+                         "the latent can HOLD these textures; gen reads the "
+                         "photograph, and is the thing that actually ships")
+    a = ap.parse_args()
+
+    cache = pathlib.Path(a.cache)
+    d = {k: np.load(cache / f"{k}.npy", mmap_mode="r")
+         for k in ("crop", "albedo", "weight", "coef", "eye")}
+    n = len(d["crop"])
+    perm = np.random.default_rng(0).permutation(n)
+    val = perm[:max(64, int(0.05 * n))]
+
+    ck = torch.load(a.model, map_location=DEV)
+    if a.stage == "ae":
+        model = TextureAutoencoder(ck["latent"], 256, ck["width"]).to(DEV)
+    else:
+        model = TextureGenerator(ck["latent"], 256, ck["width"],
+                                 pretrained=False).to(DEV)
+    model.load_state_dict(ck["model"])
+    model.eval()
+    if ck["stage"] != a.stage:
+        print(f"WARNING: checkpoint is stage {ck['stage']}, asked for {a.stage}")
+    print(f"{a.model}: stage {ck['stage']}  epoch {ck['epoch']}  val {ck['val']:.5f}")
+
+    tex = FlameTexture(CACHE_DIR / "flame_texture_256_50.npz", device=DEV)
+    from face3d import assets
+    from face3d.flame_torch import FlameTorch
+    tex.attach_eyes(FlameTorch(assets.model_path("FLAME2023Open/flame2023_Open.pkl")).to(DEV))
+    eye_off = (1.0 - tex.eye_alpha).to(DEV)
+
+    # --- numbers over the whole held-out split ---------------------------
+    tot = {"pca": 0.0, "gen": 0.0}
+    seen = 0
+    for lo in range(0, len(val), 16):
+        j = np.sort(val[lo:lo + 16])
+        alb = torch.from_numpy(d["albedo"][j].copy()).to(DEV).permute(0, 3, 1, 2).float() / 255
+        w = torch.from_numpy(d["weight"][j].copy()).to(DEV).float().unsqueeze(1) / 255
+        coef = torch.from_numpy(d["coef"][j].copy()).to(DEV)
+        eye = torch.from_numpy(d["eye"][j].copy()).to(DEV)
+        crop = torch.from_numpy(d["crop"][j].copy()).to(DEV).permute(0, 3, 1, 2).float() / 255
+        w = w * eye_off
+        with torch.no_grad():
+            pca = tex.texture(coef, eye=eye).clamp(0, 1)
+            r = model(crop) if a.stage == "gen" else model((alb - pca) * (w > 0), w)
+            gen = (pca + r).clamp(0, 1)
+        # x3: the numerator sums three colour channels, so the weight
+        # denominator must count each texel once per channel or every
+        # figure here is inflated threefold.
+        m = (w.sum() * 3).clamp(min=1e-6)
+        tot["pca"] += float(((pca - alb).abs() * w).sum() / m) * len(j)
+        tot["gen"] += float(((gen - alb).abs() * w).sum() / m) * len(j)
+        seen += len(j)
+
+    print(f"\nmasked L1 against the observed photograph, {seen} held-out faces")
+    print(f"  PCA basis        {tot['pca']/seen:.5f}")
+    print(f"  generator        {tot['gen']/seen:.5f}")
+    gain = 100 * (1 - (tot["gen"] / seen) / max(tot["pca"] / seen, 1e-9))
+    print(f"  generator is {gain:+.1f}% closer than the basis")
+
+    # --- contact sheet ----------------------------------------------------
+    S = 200
+    rows = []
+    for j in val[:a.n]:
+        alb = torch.from_numpy(d["albedo"][j].copy()).to(DEV).permute(2, 0, 1)[None].float() / 255
+        coef = torch.from_numpy(d["coef"][j].copy()).to(DEV)[None]
+        eye = torch.from_numpy(d["eye"][j].copy()).to(DEV)[None]
+        crop = torch.from_numpy(d["crop"][j].copy()).to(DEV).permute(2, 0, 1)[None].float() / 255
+        w1 = (torch.from_numpy(d["weight"][j].copy()).to(DEV).float()[None, None]
+              / 255) * eye_off
+        with torch.no_grad():
+            pca = tex.texture(coef, eye=eye).clamp(0, 1)
+            r = model(crop) if a.stage == "gen" else model((alb - pca) * (w1 > 0), w1)
+            gen = (pca + r).clamp(0, 1)
+
+        def im(t):
+            return Image.fromarray(
+                (t[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).resize((S, S))
+        rows.append([Image.fromarray(d["crop"][j].copy()).resize((S, S)),
+                     im(pca), im(alb), im(gen)])
+
+    sheet = Image.new("RGB", (4 * S, len(rows) * S), (18, 18, 18))
+    for i, r in enumerate(rows):
+        for k, t in enumerate(r):
+            sheet.paste(t, (k * S, i * S))
+    sheet.save(a.out)
+    print(f"\nwrote {a.out}  [photo | PCA | projection (target) | GENERATOR]")
+
+
+if __name__ == "__main__":
+    main()
