@@ -40,6 +40,14 @@ mistake someone makes on a first attempt:
                 all and must produce nothing.
     large       512px with big triangles: the load-imbalance case, where one
                 thread per triangle leaves most of a warp idle.
+
+A LIMIT OF THE ORACLE, worth knowing before trusting a failure. The reference
+does not scan a triangle's whole bounding box: it scans a KxK window anchored at
+floor(bbox min), with K clamped to 64 in rasterize(). A triangle spanning more
+than ~62 px is therefore silently under-rasterised, and a kernel that scans the
+real bounding box is MORE correct while reporting `spurious`. Real FLAME
+triangles have a p99 span of 15.8 px so this never fires in the pipeline, but
+fixtures have to stay inside it or they test the wrong thing.
 """
 
 import argparse
@@ -107,12 +115,19 @@ def case_edges():
 
 
 def case_offscreen():
+    # A 16px frame, not 32, and that is forced by the oracle rather than chosen.
+    # _assign_faces buckets triangles by span into [4, 8, 16, K] and a triangle
+    # with span > K falls into NO bucket and is skipped outright -- not merely
+    # under-covered. K is clamped to 64, and no triangle with span <= 64 can
+    # enclose a 32px frame, so at 32 the enclosing triangle simply never
+    # rasterised and a correct kernel "failed" with 821 spurious pixels.
+    # At 16 the enclosing triangle spans 48 and the oracle can represent it.
     return _synth([
-        [(-40.0, -40.0, 0.0), (10.0, -30.0, 0.0), (-30.0, 10.0, 0.0)],   # fully out
-        [(-10.0, 8.0, 0.1), (12.0, 6.0, 0.1), (2.0, 24.0, 0.1)],         # straddles left
-        [(24.0, 20.0, 0.2), (60.0, 18.0, 0.2), (30.0, 60.0, 0.2)],       # straddles corner
-        [(-100.0, -100.0, 0.3), (200.0, -50.0, 0.3), (-50.0, 200.0, 0.3)],  # encloses frame
-    ], 32)
+        [(-20.0, -20.0, 0.0), (5.0, -15.0, 0.0), (-15.0, 5.0, 0.0)],   # fully outside
+        [(-5.0, 4.0, 0.1), (6.0, 3.0, 0.1), (1.0, 12.0, 0.1)],         # straddles left
+        [(12.0, 10.0, 0.2), (30.0, 9.0, 0.2), (15.0, 30.0, 0.2)],      # straddles corner
+        [(-16.0, -8.0, 0.3), (32.0, -8.0, 0.3), (8.0, 32.0, 0.3)],     # encloses frame
+    ], 16)
 
 
 def case_degenerate():

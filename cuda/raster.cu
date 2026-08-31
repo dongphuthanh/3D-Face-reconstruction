@@ -100,8 +100,34 @@ __global__ void assign_faces(const float *__restrict__ verts_px,  // (B,V,2)
     // wildly out of step. That is where the real speedup is, and where it stops
     // being a beginner exercise.
     // ------------------------------------------------------------------
-    (void)verts_px; (void)depth; (void)faces; (void)buf;
-    (void)V; (void)H; (void)W; (void)zmin; (void)scale; (void)b; (void)f;
+    int vert0 = faces[f * 3], vert1 = faces[f * 3 + 1], vert2 = faces[f * 3 + 2];
+    float x0= verts_px[(b * V + vert0) * 2], y0 = verts_px[(b * V + vert0) * 2 + 1], d0 = depth[b * V + vert0];
+    float x1= verts_px[(b * V + vert1) * 2], y1 = verts_px[(b * V + vert1) * 2 + 1], d1 = depth[b * V + vert1];
+    float x2= verts_px[(b * V + vert2) * 2], y2 = verts_px[(b * V + vert2) * 2 + 1], d2 = depth[b * V + vert2];
+    float d = ((y1 - y2) * (x0 - x2)) + ((x2 - x1) * (y0 - y2));
+
+    int xlo  = max(0,   (int)floorf(fminf(fminf(x0, x1), x2)));
+    int xhi  = min(W-1, (int)floorf(fmaxf(fmaxf(x0, x1), x2)));
+
+    int ylo  = max(0,   (int)floorf(fminf(fminf(y0, y1), y2)));
+    int yhi  = min(H-1, (int)floorf(fmaxf(fmaxf(y0, y1), y2)));
+
+    for (int y = ylo; y <= yhi; y++) {
+        float py = y + 0.5;
+        for (int x = xlo; x <= xhi; x++) {
+            float px = x + 0.5;
+            float w0 = ((y1-y2)*(px-x2) + (x2-x1)*(py-y2)) / d;
+            float w1 = ((y2-y0)*(px-x2) + (x0-x2)*(py-y2)) / d;
+            float w2 = 1 - w0 - w1;
+            if (w0 < 0 || w1 < 0 || w2 < 0) {
+                continue;
+            };
+            float z = w0 * d0 + w1 * d1 + w2 * d2;
+            atomicMin(&buf[(b*H + y)*W + x], pack(z, f, zmin, scale, F));
+        }
+    }
+
+
 }
 
 __global__ void unpack(const unsigned long long *buf, int *fid, long long n,
