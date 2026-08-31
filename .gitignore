@@ -97,3 +97,8 @@ venv/
 data/texgen/
 data/texgen_cache/
 runs/texgen*/
+
+# Compiled CUDA scratch binaries (source in cuda/ is tracked)
+cuda/raster
+cuda/*.o
+cuda/*.exe
