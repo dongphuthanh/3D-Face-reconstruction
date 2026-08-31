@@ -131,11 +131,27 @@ def case_offscreen():
 
 
 def case_degenerate():
+    # Degenerate triangles must not crash and must not emit garbage. They must
+    # also not be DRAWN: a zero-area triangle covers nothing.
+    #
+    # Two shapes are deliberately absent. A triangle with span exactly 0 (all
+    # three vertices identical) falls into no bucket at all -- the first bucket
+    # tests `span > 0` -- so the reference skips it structurally while a kernel
+    # scanning the bounding box draws it: with d guarded to 1e-12 the
+    # barycentrics come out (0, 0, 1), which passes the inside test. And
+    # collinear points landing exactly ON pixel centres make the numerators
+    # vanish too, giving 0/1e-12 = 0 rather than an infinity, so the reference
+    # draws a line of them -- along the K-window, which extends past the
+    # triangle's own bounding box. Both are properties of the oracle, not of
+    # rasterisation, and a correct kernel disagrees with it on both.
+    #
+    # What is left is the useful part: collinear and zero-height triangles
+    # placed OFF the pixel lattice, where every numerator is non-zero, the
+    # weights blow up to +/-inf, and both implementations draw nothing.
     return _synth([
-        [(5.0, 5.0, 0.0), (5.0, 5.0, 0.0), (5.0, 5.0, 0.0)],             # a point
-        [(2.0, 2.0, 0.1), (20.0, 20.0, 0.1), (11.0, 11.0, 0.1)],         # collinear
-        [(4.0, 24.0, 0.2), (26.0, 24.0, 0.2), (4.0, 24.0, 0.2)],         # zero height
-        [(6.0, 6.0, 0.3), (26.0, 8.0, 0.3), (12.0, 28.0, 0.3)],          # a real one
+        [(2.0, 2.3, 0.1), (20.0, 20.3, 0.1), (11.0, 11.3, 0.1)],   # collinear
+        [(4.0, 23.7, 0.2), (26.0, 23.7, 0.2), (4.0, 23.7, 0.2)],   # zero height
+        [(6.0, 6.0, 0.3), (26.0, 8.0, 0.3), (12.0, 28.0, 0.3)],    # a real one
     ], 32)
 
 
@@ -147,12 +163,25 @@ def case_ties():
 
 
 def case_subpixel():
-    # Well under a pixel. Most cover no pixel CENTRE and must draw nothing;
-    # a kernel that fills the bounding box regardless will report `spurious`.
+    # Triangles well under a pixel. Most cover no pixel CENTRE and must draw
+    # nothing; a kernel that fills the bounding box regardless reports
+    # `spurious`.
+    #
+    # The last triangle is normal-sized and is NOT decoration. K is derived from
+    # the largest span in the case, and _assign_faces buckets with
+    # edges = [4, 8, 16, K], breaking as soon as edge > K. With only sub-pixel
+    # triangles K came out 3, the loop broke on the first edge, and the
+    # reference rasterised NOTHING -- so the case "passed" for an empty kernel
+    # and failed for a correct one.
     tris = []
     for i in range(12):
         x, y = 3.0 + i * 2.3, 5.0 + (i % 5) * 4.1
         tris.append([(x, y, 0.1 * i), (x + 0.3, y, 0.1 * i), (x, y + 0.3, 0.1 * i)])
+    # Span 22, not 12, and that is forced too. edges = [4, 8, 16, K] is scanned
+    # in order and breaks at the first edge > K, so when K < 16 the loop stops
+    # before it ever reaches the K bucket and everything with span in (8, K] is
+    # dropped. K must be >= 16 for the last bucket to run at all.
+    tris.append([(2.0, 6.0, 2.0), (22.0, 8.0, 2.0), (8.0, 28.0, 2.0)])
     return _synth(tris, 32)
 
 
