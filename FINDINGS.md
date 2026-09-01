@@ -90,6 +90,33 @@ the treatment's 13% lower photometric loss is arithmetic, not improvement. It
 excluded exactly the pixels that are hardest to explain. Only an external metric
 can settle it, which is what the sweep is for.
 
+Replicated on the shipped configuration. The FFHQ pilot could not see the
+mechanism it was testing, so the run was repeated with the identity corpus and
+the full loss set -- 7,575 DigiFace subjects, K=4, shape swap 1.0, identity 0.2,
+eye 1.0, lip 0.5, FFHQ mixed in, 3 epochs, masks on BOTH corpora:
+
+| alpha | mask off | mask on | delta |
+|---|---|---|---|
+| 0.25 | 1.2472 | 1.2558 | +0.0086 |
+| **0.40** | **1.2449** | **1.2484** | +0.0034 |
+| 0.60 | 1.3009 | 1.2903 | -0.0106 |
+
+Same verdict, and now where the mechanism was most plausible: every delta inside
+the ~0.028 mm this setup resolves, the sign flipping again at 0.60, and
+validation landmark loss identical to four decimals (0.0321 both). Two
+independent pilots, on different corpora and different loss sets, both find
+nothing. Gating the photometric loss on segmented skin does not improve
+identity shape here.
+
+A caveat on the absolute numbers, which is itself a finding: these two runs were
+launched WITHOUT `FACE3D_MODEL`, so `assets.py` resolved FLAME implicitly and
+they trained against FLAME 2020, not 2023 Open. The A/B is unaffected -- both
+arms share the basis, and the mask is the only difference -- but 1.2449 must be
+read against FLAME 2020's mean face at 1.3554, not against deca_open's 1.2798 on
+a different basis. The model card warns that this argument is not optional and
+it still caught us; these checkpoints are also not licence-clean and must not
+ship.
+
 What this pilot cannot rule out. It is FFHQ-only with no identity loss and no
 shape swap, so it tests the photometric term in isolation rather than the
 shipped configuration. The leak is larger on DigiFace (21.6%), which is where
