@@ -40,6 +40,24 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def _skin_for(root, on, res=112):
+    """<corpus>/skin_<res>.npz when --photo-mask is on and the cache exists.
+
+    Per corpus rather than one path, because a run mixes DigiFace and FFHQ and
+    each needs its own masks. Missing cache is a hard error: silently training
+    unmasked when you asked for masks is the failure this whole experiment
+    exists to avoid.
+    """
+    if not on:
+        return None
+    q = pathlib.Path(root) / f"skin_{res}.npz"
+    if not q.exists():
+        raise FileNotFoundError(
+            f"{q} not found - build it first:\n"
+            f"  python scripts/data/make_seg_masks.py --corpus {pathlib.Path(root).name}")
+    return q
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=8)
@@ -148,8 +166,10 @@ def main():
                     action="store_false", default=True,
                     help="rasterise both paired views (about 45%% more VRAM); "
                          "by default only the weak view is rendered")
-    ap.add_argument("--photo-mask", default=None,
-                    help="skin_<res>.npz from scripts/data/make_seg_masks.py. "
+    ap.add_argument("--photo-mask", action="store_true",
+                    help="gate the photometric loss on segmented face skin. "
+                         "Resolves <corpus>/skin_112.npz per corpus, built by "
+                         "scripts/data/make_seg_masks.py. "
                          "Gates the photometric loss on the segmenter's "
                          "FACE_SKIN class, so hair and background inside the "
                          "mesh silhouette stop reaching the loss (measured at "
@@ -187,18 +207,20 @@ def main():
     if a.identity_data:
         root = pathlib.Path(a.identity_data)
         K = a.images_per_identity
+        id_skin = _skin_for(root, a.photo_mask)
         tr = IdentityPairs(root, a.size, "train", embeddings=a.arcface, k=K,
                            cache_name=a.identity_cache or None,
-                           min_images=a.identity_min_images)
+                           min_images=a.identity_min_images, skin=id_skin)
         va = IdentityPairs(root, a.size, "val", embeddings=a.arcface, k=K,
                            cache_name=a.identity_cache or None,
-                           min_images=a.identity_min_images)
+                           min_images=a.identity_min_images, skin=id_skin)
         print(f"    {len(tr)} train subjects, {len(va)} held out"
               f"  (>= {a.identity_min_images} images each"
               f"{', ' + a.identity_cache if a.identity_cache else ''})")
     else:
-        tr = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train", skin=a.photo_mask)
-        va = FFHQCrops(ROOT / "data" / "ffhq", a.size, "val", skin=a.photo_mask)
+        fq = ROOT / "data" / "ffhq"
+        tr = FFHQCrops(fq, a.size, "train", skin=_skin_for(fq, a.photo_mask))
+        va = FFHQCrops(fq, a.size, "val", skin=_skin_for(fq, a.photo_mask))
     dl = DataLoader(tr, batch_size=a.batch, shuffle=True, num_workers=4,
                     drop_last=True, persistent_workers=True)
     vl = DataLoader(va, batch_size=a.batch, num_workers=2)
@@ -218,7 +240,8 @@ def main():
     mix_dl = None
     if a.mix_ffhq > 0:
         mix_root = pathlib.Path(a.mix_data) if a.mix_data else ROOT / "data" / "ffhq"
-        mix_ds = FFHQCrops(mix_root, a.size, "train", skin=a.photo_mask)
+        mix_ds = FFHQCrops(mix_root, a.size, "train",
+                           skin=_skin_for(mix_root, a.photo_mask))
         mix_dl = DataLoader(mix_ds, batch_size=a.mix_batch or a.batch, shuffle=True,
                             num_workers=2, drop_last=True, persistent_workers=True)
         print(f"    mixing {len(mix_ds)} {mix_root.name} photographs "

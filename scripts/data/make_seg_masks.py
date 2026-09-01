@@ -34,6 +34,10 @@ def main():
     ap.add_argument("--corpus", default="ffhq")
     ap.add_argument("--limit", type=int, default=0, help="0 = every crop")
     ap.add_argument("--res", type=int, default=RES)
+    ap.add_argument("--keys-from", default=None,
+                    help="a landmarks npz; segment only the crops it lists. "
+                         "Lets a subset experiment mask exactly the images it "
+                         "trains on, instead of the whole corpus.")
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--of", type=int, default=1,
                     help="split the corpus across N processes. MediaPipe is "
@@ -67,7 +71,19 @@ def main():
             q.unlink()
         return
 
-    files = sorted(crops.rglob("*.jpg")) + sorted(crops.rglob("*.png"))
+    if a.keys_from:
+        with np.load(a.keys_from) as d:
+            wanted = [str(k) for k in d["keys"]]
+        files = []
+        for k in wanted:
+            for ext in (".jpg", ".png"):
+                q = crops / f"{k}{ext}"
+                if q.exists():
+                    files.append(q)
+                    break
+        files.sort()
+    else:
+        files = sorted(crops.rglob("*.jpg")) + sorted(crops.rglob("*.png"))
     if a.limit:
         files = files[:a.limit]
     if a.of > 1:

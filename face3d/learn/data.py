@@ -112,7 +112,8 @@ class IdentityPairs(Dataset):
     """
 
     def __init__(self, root, size=224, split="train", val_frac=0.05, seed=0,
-                 min_images=2, embeddings=False, k=2, cache_name=None):
+                 min_images=2, embeddings=False, k=2, cache_name=None,
+                 skin=None):
         root = pathlib.Path(root)
         # cache_name lets a filtered grouping live beside the full ingest and
         # share its crops -- CelebA writes landmarks_224_swap.npz, whose subject
@@ -171,6 +172,19 @@ class IdentityPairs(Dataset):
         self._keys = None
         self._lmk = None
         self._emb = None
+        # Loaded lazily per worker, same reasoning as the landmarks below.
+        self.skin_cache = pathlib.Path(skin) if skin else None
+        self._skin = None
+        self.size = size
+
+    def _skin_masks(self):
+        """(lookup, packed, res) for the segmenter's FACE_SKIN masks."""
+        if self._skin is None:
+            with np.load(self.skin_cache) as z:
+                # Mask keys carry the file extension, landmark keys do not.
+                lut = {str(k).rsplit(".", 1)[0]: i for i, k in enumerate(z["keys"])}
+                self._skin = (lut, z["masks"], int(z["res"]))
+        return self._skin
 
     def _arrays(self):
         if self._lmk is None:
@@ -216,9 +230,22 @@ class IdentityPairs(Dataset):
         keys, lmk = self._arrays()
         im = Image.open(self.dir / f"{keys[i]}.jpg").convert("RGB")
         arr = np.array(im, dtype=np.uint8)
+        skin = None
+        if self.skin_cache is not None:
+            lut, packed, R = self._skin_masks()
+            r = lut.get(keys[i], -1)
+            if r < 0:
+                m = np.ones((self.size, self.size), np.float32)
+            else:
+                bits = np.unpackbits(packed[r])[:R * R].reshape(R, R)
+                m = np.asarray(Image.fromarray(bits * 255)
+                               .resize((self.size, self.size), Image.BILINEAR))
+                m = m.astype(np.float32) / 255.0
+            skin = torch.from_numpy(m)
         return (torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0,
                 torch.from_numpy(lmk[i]),
-                torch.from_numpy((arr.sum(-1) > 0).astype(np.float32)))
+                torch.from_numpy((arr.sum(-1) > 0).astype(np.float32)),
+                skin)
 
     def __getitem__(self, idx):
         g = self.groups[idx]
@@ -230,6 +257,8 @@ class IdentityPairs(Dataset):
         out = {"image": torch.stack([x[0] for x in loaded]),
                "landmarks": torch.stack([x[1] for x in loaded]),
                "valid": torch.stack([x[2] for x in loaded])}
+        if self.skin_cache is not None:
+            out["skin"] = torch.stack([x[3] for x in loaded])
         if self.emb_cache is not None:
             e = self._embeddings()
             out["embedding"] = torch.stack(
