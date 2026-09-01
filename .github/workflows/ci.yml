@@ -16,11 +16,15 @@ jobs:
           cache: pip
 
       # CPU wheels: the runner has no GPU, and every suite falls back to CPU.
+      # torch first, and from --index-url rather than --extra-index-url: with
+      # the latter pip may resolve torch==2.9.0 from PyPI, which on Linux is
+      # the CUDA build -- ~2.5 GB of wheels this runner has no use for.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt \
-            --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install --index-url https://download.pytorch.org/whl/cpu \
+            torch==2.9.0 torchvision==0.24.0
+          pip install -r requirements.txt
 
       - name: Syntax check
         run: python -m compileall -q face3d scripts tests webapp

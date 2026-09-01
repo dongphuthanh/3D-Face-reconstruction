@@ -1,14 +1,31 @@
 # Pinned environment — story A2.
 #
-# torch MUST be a CUDA 12.8 build. The development GPU is an RTX 5070 Laptop
-# (Blackwell, sm_120), and older CUDA wheels install cleanly then fail at the
-# first kernel launch with "no kernel image is available for execution on the
-# device" — which reads as a broken install rather than an architecture
-# mismatch. Install with:
+# torch MUST be a CUDA build, and its CUDA major version MUST match the toolkit
+# installed on the machine. Two separate reasons:
 #
-#   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128
+#   1. The development GPU is an RTX 5070 Laptop (Blackwell, sm_120). Older CUDA
+#      wheels install cleanly and then fail at the first kernel launch with "no
+#      kernel image is available for execution on the device", which reads as a
+#      broken install rather than an architecture mismatch.
+#   2. The rasteriser extension (face3d/render/raster_cuda.py) is compiled by
+#      nvcc against the local toolkit and linked against torch. A cu128 torch on
+#      a CUDA 13.3 box does not fail loudly — it falls back to the pure-PyTorch
+#      path, and the only symptom is that training is ~25% slower.
 #
-# CPU-only (CI) works with the default index.
+# This box has CUDA 13.3, hence cu130. Use `make setup`, which pins the index
+# correctly; or by hand:
+#
+#   pip install --index-url https://download.pytorch.org/whl/cu130 torch==2.9.0 torchvision==0.24.0
+#   pip install -r requirements.txt
+#
+# --index-url, not --extra-index-url: with the latter pip may take torch==2.9.0
+# from PyPI instead, since the version matches and only the +cu130 build tag
+# differs. For the same reason, replacing an existing torch that was built
+# against another CUDA needs `make setup-force` — pip considers 2.9.0+cu128 and
+# 2.9.0+cu130 to be the same version and will not swap one for the other.
+#
+# `make check-cuda` reports which build is installed and whether the kernel
+# loads. CPU-only (CI) works with the default index.
 
 torch==2.9.0
 torchvision==0.24.0
