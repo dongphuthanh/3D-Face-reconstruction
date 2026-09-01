@@ -84,6 +84,11 @@ def extension():
 
         flags = ["-O3", f"-arch=sm_{major}{minor}"]
         if os.name == "nt":
+            # CUDA 13's CCCL headers refuse MSVC's traditional preprocessor:
+            #   preprocessor.h: MSVC/cl.exe with traditional preprocessor is used
+            # /Zc:preprocessor selects the standards-conformant one. Required
+            # from CUDA 13 onward; harmless before it.
+            flags += ["-Xcompiler", "/Zc:preprocessor"]
             # nvcc refuses host compilers newer than the ones it shipped
             # knowing about, and this machine has only MSVC 14.51 (VS 18) while
             # CUDA 12.8 expects 14.4x. Without this it stops at "unsupported
