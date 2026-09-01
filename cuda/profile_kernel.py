@@ -4,9 +4,10 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from face3d import assets, raster_cuda
-from face3d.flame_torch import FlameTorch
-from face3d.pipeline import project
+from face3d import assets
+from face3d.render import raster_cuda
+from face3d.geometry.flame_torch import FlameTorch
+from face3d.render.pipeline import project
 
 B, S = 8, 224  # the encoder's training batch and render size
 

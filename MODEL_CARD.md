@@ -40,7 +40,7 @@ can resolve, so treat the NoW ordering as a tie.
 ## Inference
 
 ```
-SHAPE_CALIBRATION = 0.40      # face3d/encoder.py
+SHAPE_CALIBRATION = 0.40      # face3d/learn/encoder.py
 ```
 
 Non-negotiable, and not a tuning nicety. The raw prediction (α=1.0) scores
@@ -157,7 +157,7 @@ one — DigiFace + FFHQ only — so it is the *corpus*-clean option, but the FLA
 Getting to genuinely clean weights means retraining against FLAME 2023 Open:
 
 ```bash
-FACE3D_MODEL=FLAME2023Open/flame2023_Open.pkl python scripts/train.py ...
+FACE3D_MODEL=FLAME2023Open/flame2023_Open.pkl python scripts/train/train.py ...
 ```
 
 An existing checkpoint cannot simply be repointed. The two bases share topology
@@ -180,7 +180,7 @@ Not legal advice. Get real advice before any commercial use.
 
 ```bash
 # deca_joint
-python scripts/train.py --identity-data data/digiface \
+python scripts/train/train.py --identity-data data/digiface \
   --identity-data2 data/celeba --identity-cache2 landmarks_224_swap.npz \
   --identity-min-images2 4 --identity2-batch 8 --w-identity2 1.0 \
   --epochs 3 --batch 8 -k 4 --lr 2e-4 \
@@ -188,14 +188,14 @@ python scripts/train.py --identity-data data/digiface \
   --mix-ffhq 1.0 --mix-batch 16 --out runs/deca_joint
 
 # deca_full (licence-clean)
-python scripts/train.py --identity-data data/digiface --epochs 3 --batch 8 -k 4 \
+python scripts/train/train.py --identity-data data/digiface --epochs 3 --batch 8 -k 4 \
   --lr 2e-4 --w-swap 1.0 --w-id 0.2 --w-eye 1.0 --w-lip 0.5 \
   --mix-ffhq 1.0 --mix-batch 16 --out runs/deca_full
 ```
 
-Evaluation: `scripts/now_predict.py` + Docker (`face3d.now.run_docker_eval`),
-`scripts/eval_closure.py --data {digiface,celeba}`, `scripts/diag_identity.py`,
-`scripts/render_compare.py`. Export: `scripts/export_head.py --image X
+Evaluation: `scripts/eval/now_predict.py` + Docker (`face3d.now.run_docker_eval`),
+`scripts/eval/eval_closure.py --data {digiface,celeba}`, `scripts/eval/diag_identity.py`,
+`scripts/tools/render_compare.py`. Export: `scripts/tools/export_head.py --image X
 --out head.glb` (defaults to the deca_open / FLAME 2023 Open pair; pass
 `--checkpoint` and `--flame-model` together or not at all).
 
@@ -220,7 +220,7 @@ UNSPLIT mesh: recomputing after the split would treat the seam as a boundary
 and shade it as a crease.
 
 The texture is **sampled from the photograph**, not reconstructed from the 50
-albedo coefficients (`face3d/project.py`). The basis cannot represent a mole, a
+albedo coefficients (`face3d/texture/project.py`). The basis cannot represent a mole, a
 freckle, an eyebrow or stubble, because it holds no direction that varies at
 that scale; projecting the photo through the fitted camera recovers all of
 them, and eyebrows in particular read convincingly as texture on geometry that
@@ -228,7 +228,7 @@ has none. The basis still fills whatever the camera never saw, mirrored across
 the face where a mirror is available. Adds ~250 ms. `--no-project` restores the
 old PCA-only bake.
 
-**A learned generator is the default** (`face3d/texgen.py`,
+**A learned generator is the default** (`face3d/texture/texgen.py`,
 `runs/texgen_gen`). Projection still exists behind `texgen=False`, and its two
 guards are described below, but a guard is a filter and a filter can only
 remove what it recognises. The generator instead makes the failure
@@ -273,7 +273,7 @@ at 0.27 s through the HTTP layer.
 
 ## Named skin parameters
 
-Eleven numbers on top of the learned texture (`face3d/skin.py`), predicted from
+Eleven numbers on top of the learned texture (`face3d/texture/skin.py`), predicted from
 the same trunk: **skin RGB, lip RGB, brow RGB, freckle amount, crease amount**.
 `Reconstructor.build(..., skin_override={...})` replaces any of them without
 touching the rest, and `last_params` reports what the photograph implied. This
@@ -360,7 +360,7 @@ smears — which is what makes the capture guide above load-bearing rather than
 cosmetic.
 
 **Hair is OFF by default** and the exported head is bald. What exists
-(`face3d/hair.py`) is the scalp inflated to fit the photograph's hair outline,
+(`face3d/texture/hair.py`) is the scalp inflated to fit the photograph's hair outline,
 not a hair model. MediaPipe's selfie multiclass segmenter
 (Apache-2.0) marks hair pixels; the hair outline is compared to the scalp
 outline per angle around the head; the scalp is pushed out along its normals by

@@ -1,5 +1,5 @@
 // PyTorch binding for the CUDA rasteriser. Built on demand by
-// face3d/raster_cuda.py; see there for why it is JIT-compiled rather than
+// face3d/render/raster_cuda.py; see there for why it is JIT-compiled rather than
 // shipped as a wheel.
 //
 // The kernels themselves live in raster_kernel.cuh and are shared with the

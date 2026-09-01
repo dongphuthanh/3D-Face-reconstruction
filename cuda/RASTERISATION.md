@@ -1,6 +1,6 @@
 # How this rasteriser works
 
-The maths behind `face3d/render.py::_assign_faces`, which `cuda/raster.cu`
+The maths behind `face3d/render/render.py::_assign_faces`, which `cuda/raster.cu`
 replaces. Written to be read before writing the kernel.
 
 The reference implementation is the definition. Where this document and the code
@@ -121,7 +121,7 @@ perspective projection you must interpolate `1/w` and `z/w` and divide —
 does not commute with linear interpolation. Interpolating z linearly in screen
 space under perspective is a classic and very visible bug.
 
-We are safe because `face3d/pipeline.py::project` is *weak perspective*:
+We are safe because `face3d/render/pipeline.py::project` is *weak perspective*:
 
     xy = v_xy · s + t
     z  = −v_z · s

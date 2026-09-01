@@ -8,7 +8,7 @@ Two consequences are handled here:
     raising, so callers can skip cleanly instead of failing a build for a
     missing licensed file.
   * FACE3D_MODEL overrides the search. CI points it at the synthetic fixture
-    from scripts/make_fixture.py, which shares FLAME's pickle structure but
+    from tests/fixtures/make_fixture.py, which shares FLAME's pickle structure but
     contains no MPI data — so the rasteriser, LBS, gradient and interface tests
     all run on a public runner.
 """
@@ -52,7 +52,7 @@ def model_path_or_skip(variant=None):
     if p is None:
         print(f"SKIP — no FLAME model found. Looked for {CANDIDATES}, "
               f"and FACE3D_MODEL is unset.\n"
-              f"      Run `python scripts/make_fixture.py` for a synthetic "
+              f"      Run `python tests/fixtures/make_fixture.py` for a synthetic "
               f"stand-in, or place a FLAME model in the project root.")
         sys.exit(0)
     return p

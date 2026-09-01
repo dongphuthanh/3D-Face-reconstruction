@@ -7,11 +7,11 @@ from a plain Python prompt:
     r = Reconstructor()
     glb = r.reconstruct(open("photo.jpg", "rb").read())
     open("out/test.glb", "wb").write(glb)
-    # then: node scripts/validate_glb.js out/test.glb
+    # then: node scripts/tools/validate_glb.js out/test.glb
 
 When the web layer later misbehaves you will already know the model half is fine.
 
-Reference: scripts/export_head.py does all of this in order, as a CLI.
+Reference: scripts/tools/export_head.py does all of this in order, as a CLI.
 """
 
 import io
@@ -26,23 +26,23 @@ from PIL import Image
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 from face3d import assets
-from face3d.albedo import CACHE_DIR, FlameTexture, face_texel_mask, harmonise
-from face3d.detect import FaceDetector, crop_square
-from face3d.encoder import ResNetEncoder
-from face3d.facemask import eye_faces
-from face3d.flame_torch import FlameTorch
-from face3d.gltf import build_gltf, glb_bytes, vertex_normals
-from face3d.landmarks import LandmarkEmbedding
-from face3d.hair import (FACE_SKIN, HAIR, MIN_THICKNESS, HairSegmenter,
+from face3d.render.albedo import CACHE_DIR, FlameTexture, face_texel_mask, harmonise
+from face3d.learn.detect import FaceDetector, crop_square
+from face3d.learn.encoder import ResNetEncoder
+from face3d.geometry.facemask import eye_faces
+from face3d.geometry.flame_torch import FlameTorch
+from face3d.export.gltf import build_gltf, glb_bytes, vertex_normals
+from face3d.geometry.landmarks import LandmarkEmbedding
+from face3d.texture.hair import (FACE_SKIN, HAIR, MIN_THICKNESS, HairSegmenter,
                          inflate, measure, project_px, scalp_faces,
                          scalp_region, shell_offset)
-from face3d.project import (FACING_MAX, FACING_MIN, composite,
+from face3d.texture.project import (FACING_MAX, FACING_MIN, composite,
                             frequency_merge, load_static, project_photo)
-from face3d.regions import crease_map, region_masks, unobserved_mask
-from face3d.skin import compose as skin_compose
-from face3d.skin import freckle_noise, settle_unobserved, split as skin_split
-from face3d.texgen import TextureGenerator
-from face3d.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
+from face3d.texture.regions import crease_map, region_masks, unobserved_mask
+from face3d.texture.skin import compose as skin_compose
+from face3d.texture.skin import freckle_noise, settle_unobserved, split as skin_split
+from face3d.texture.texgen import TextureGenerator
+from face3d.geometry.rig import JOINT_NAMES, expression_targets, jaw_target, rest_joints
 
 # Must match training. Every corpus and the NoW evaluation crop at 1.6, and a
 # mismatch is a distribution shift, not a cosmetic difference. See MODEL_CARD.md.
@@ -58,7 +58,7 @@ MORPH_TARGETS = 20
 MERGE_SIGMA = 0.045
 MERGE_STRENGTH = 0.85
 
-# Baked texture resolution when projecting the photograph (face3d/project.py).
+# Baked texture resolution when projecting the photograph (face3d/texture/project.py).
 # 256 is right for the PCA basis, which has no detail above that scale anyway;
 # a projected texture carries real pores and eyebrows, so it earns the pixels.
 PROJECT_RES = 512
@@ -129,7 +129,7 @@ class Reconstructor:
                  project=True, hair=False, texgen=True):
         self.device = device
         self.project = project
-        # The learned texture generator (face3d/texgen.py). When on it
+        # The learned texture generator (face3d/texture/texgen.py). When on it
         # REPLACES projection rather than layering on it: the point is that
         # its output is on-manifold by construction, and compositing a raw
         # projection over the top would hand back the artefacts it exists to
@@ -280,7 +280,7 @@ class Reconstructor:
                 # happened and carry on. runs/ is gitignored, so a fresh clone
                 # legitimately arrives without this file.
                 print(f"    NOTE: no texture generator at {path}; falling back "
-                      f"to projection. Train it with scripts/train_texgen.py.",
+                      f"to projection. Train it with scripts/train/train_texgen.py.",
                       flush=True)
                 self.texgen_path = None
             else:
@@ -459,7 +459,7 @@ class Reconstructor:
         no detail: 50 numbers cannot encode a mole or an eyebrow. When the
         photograph is available we sample it directly into UV space and lay that
         over the top, keeping the basis underneath for everything the camera
-        never saw. See face3d/project.py.
+        never saw. See face3d/texture/project.py.
 
         Everything stays in memory and is encoded as PNG for the GLB's binary
         chunk, so the asset is one self-contained file with no external refs.
@@ -586,7 +586,7 @@ class Reconstructor:
               skin_override=None):
         """Photograph -> (gltf dict, binary blob), the pieces before packing.
 
-        Split out from reconstruct() so scripts/export_head.py can write .gltf
+        Split out from reconstruct() so scripts/tools/export_head.py can write .gltf
         alongside .glb without owning a second copy of this pipeline. It had
         one, and the copy had drifted: it resolved FLAME implicitly, which
         picks FLAME 2020 whatever the checkpoint was trained on.
@@ -640,7 +640,7 @@ class Reconstructor:
 
         # --- 5b. hair --------------------------------------------------------
         # Segment the photograph, measure how far the hair stands off the skull,
-        # and push the scalp out to meet it. See face3d/hair.py -- this is a cap
+        # and push the scalp out to meet it. See face3d/texture/hair.py -- this is a cap
         # fitted to one view's silhouette, not a hairstyle.
         # --- 5b. what may be sampled ----------------------------------------
         # Gate the projection on the segmenter's face-skin class. This is the

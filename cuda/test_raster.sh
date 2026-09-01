@@ -5,7 +5,7 @@
 #   bash cuda/test_raster.sh
 #
 # Regenerate the fixtures first, from Windows:
-#   python scripts/dump_raster_fixture.py
+#   python tests/fixtures/dump_raster_fixture.py
 #
 # Exit code is 0 only if every case matches the PyTorch reference EXACTLY.
 #
@@ -23,7 +23,7 @@ if ! command -v nvcc >/dev/null; then
     exit 2
 fi
 if [ ! -d "$FIX" ]; then
-    echo "no fixtures at $FIX -- run: python scripts/dump_raster_fixture.py"
+    echo "no fixtures at $FIX -- run: python tests/fixtures/dump_raster_fixture.py"
     exit 2
 fi
 
@@ -80,7 +80,7 @@ cat <<'EOF'
   swapped   right pixel, wrong triangle  -> depth compare or tie-break
 
   A few `swapped` between triangles at nearly equal depth is float rounding.
-  Anything else is logic. Re-read face3d/render.py::_assign_faces -- that code
+  Anything else is logic. Re-read face3d/render/render.py::_assign_faces -- that code
   is the definition, not the comments in raster.cu.
 EOF
 exit 1

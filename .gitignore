@@ -34,7 +34,7 @@ reference/
 data/photos/
 
 # FFHQ: CC BY-NC-SA as a collection, and 6.5 GB besides. The ingest is
-# reproducible from scripts/ingest_ffhq.py, so only the recipe is tracked.
+# reproducible from scripts/data/ingest_ffhq.py, so only the recipe is tracked.
 data/ffhq/
 
 # DigiFace-1M: R-UDA v1.0, redistribution requires binding recipients to the
@@ -47,13 +47,13 @@ data/digiface/
 # remotely and only the recipe is tracked.
 data/arc2face/
 
-# CelebA crops written by scripts/ingest_celeba.py -- 161k files, and the same
+# CelebA crops written by scripts/data/ingest_celeba.py -- 161k files, and the same
 # no-redistribution terms as the cache below. Listed separately because the
 # cache rule alone left these visible to `git add -A`, which then spent minutes
 # trying to stage 12 GB of licence-restricted images.
 data/celeba/
 
-# CelebA, pulled as parquet by scripts/diag_corpus_identity.py. The release
+# CelebA, pulled as parquet by scripts/eval/diag_corpus_identity.py. The release
 # agreement is explicit: non-commercial research only, and "you agree not to
 # further copy, publish or distribute any portion". Copies are permitted for
 # internal use at a single site, which is what this cache is. The face
@@ -105,3 +105,8 @@ cuda/*.exe
 
 # Local build helper, machine-specific paths
 cuda/_build_env.bat
+cuda/_profile_env.bat
+cuda/*.ncu-rep
+
+# Personal career notes, not part of the published repo
+RESUME_BRIEF.md

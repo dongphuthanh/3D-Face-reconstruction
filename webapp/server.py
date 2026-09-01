@@ -20,6 +20,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from PIL import UnidentifiedImageError
 
 from webapp.pipeline import NoFaceFound, Reconstructor
@@ -151,3 +152,10 @@ def reconstruct(image: UploadFile = File(...)):
         media_type="model/gltf-binary",
         headers={"Content-Disposition": 'attachment; filename="head.glb"'},
     )
+
+
+# The browser UI. Mounted LAST and at "/", so it is the fallback: the explicit
+# routes above are matched first and only unclaimed paths fall through to a
+# file. html=True serves index.html for "/" itself.
+app.mount("/", StaticFiles(directory=pathlib.Path(__file__).parent / "static",
+                           html=True), name="ui")

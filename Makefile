@@ -3,7 +3,7 @@ PY ?= python
 .PHONY: help setup fixture test test-fast test-ci eval clean
 
 help:
-	@echo "setup      install pinned dependencies (CUDA 12.8 build of torch)"
+	@echo "setup      install pinned dependencies"
 	@echo "fixture    regenerate the synthetic CI model"
 	@echo "test       full suite against whichever FLAME model is on disk"
 	@echo "test-fast  skip the training suites"
@@ -15,27 +15,27 @@ setup:
 		--extra-index-url https://download.pytorch.org/whl/cu128
 
 fixture:
-	$(PY) scripts/make_fixture.py
+	$(PY) tests/fixtures/make_fixture.py
 
 test:
-	$(PY) scripts/run_tests.py
+	$(PY) tests/run_tests.py
 
 test-fast:
-	$(PY) scripts/run_tests.py smoke_flame test_flame_torch test_render test_interface
+	$(PY) tests/run_tests.py smoke_flame test_flame_torch test_render test_interface
 
 test-ci: fixture
-	FACE3D_MODEL=tests/fixtures/tiny_head.pkl $(PY) scripts/run_tests.py
+	FACE3D_MODEL=tests/fixtures/tiny_head.pkl $(PY) tests/run_tests.py
 
 eval-image:
 	cd now_evaluation-main && docker build -t noweval .
 
 eval-check:
-	$(PY) scripts/now_validate_harness.py identity --subjects 5
-	$(PY) scripts/now_validate_harness.py mean --subjects 20
+	$(PY) scripts/eval/now_validate_harness.py identity --subjects 5
+	$(PY) scripts/eval/now_validate_harness.py mean --subjects 20
 
 eval:
 	@echo "Run 'make eval-check' to validate the harness first."
 	@echo "Prediction + scoring of a trained encoder is not wired up yet."
 
 clean:
-	rm -rf out/*.obj out/*.png __pycache__ face3d/__pycache__ scripts/__pycache__
+	find . -name __pycache__ -type d -prune -exec rm -rf {} + ; rm -rf out/*.obj out/*.png
