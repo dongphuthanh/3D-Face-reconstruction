@@ -164,8 +164,7 @@ together or not at all.
 ## Export
 
 GLB carries: **5118 verts** (5023 geometry vertices with 95 duplicated along UV
-seams -- see below), 9976 tris in two primitives (skin, eyes; three with
-`--hair`) sharing one set of vertex accessors, smooth normals, UVs, an embedded 512×512
+seams -- see below), 9976 tris in two primitives (skin, eyes) sharing one set of vertex accessors, smooth normals, UVs, an embedded 512×512
 baseColour PNG, a 5-joint armature
 (root/neck/jaw/eye_left/eye_right), and 21 named morph targets
 (`expr_00`…`expr_19`, `jaw_open`). Head is ~31 cm tall at the origin, Y-up.
@@ -321,29 +320,23 @@ occluder the segmenter calls skin. Where geometry is wrong the texture still
 smears — which is what makes the capture guide above load-bearing rather than
 cosmetic.
 
-**Hair is OFF by default** and the exported head is bald. What exists
-(`face3d/texture/hair.py`) is the scalp inflated to fit the photograph's hair outline,
-not a hair model. MediaPipe's selfie multiclass segmenter
-(Apache-2.0) marks hair pixels; the hair outline is compared to the scalp
-outline per angle around the head; the scalp is pushed out along its normals by
-the difference, tapered to nothing at the hairline. The projection then paints
-the person's own hair onto it, and unseen scalp is filled with the mean of the
-hair that *was* seen.
+**There is no hair.** The exported head is bald, and FLAME has no basis for
+hair, so this is a limitation of the representation rather than a missing
+feature.
 
-Be clear what that is. It is a cap following one view's silhouette. It cannot do
-a parting, a curl, a strand, or anything that leaves the skull — a ponytail, a
-fringe over an eye, hair past the shoulders. For short and medium hair it turns
-a bald mannequin into something recognisable; for long hair it gives a helmet
-whose outline is right from the front and wrong behind. Thickness is capped at
-4 cm, and below 4 mm no shell is emitted at all, so a bald head stays bald
-rather than gaining a swollen skull.
+A scalp shell was built and removed. It segmented the photograph's hair, compared
+the hair outline to the scalp outline per angle around the head, pushed the
+scalp out along its normals by the difference, and let the projection paint the
+person's own hair onto it. The measurement worked. The result read *worse* than
+a bald head: it lands in the valley between "no hair" and "that person's hair",
+where a viewer reads the near-miss as wrong rather than the absence as stylised.
+It could not do a parting, a curl, a ponytail, or anything leaving the skull.
+Kept behind a flag for a while, then deleted — a disabled feature is still code
+to read, and the fix is real hair geometry (authored assets or strand
+reconstruction), not a better fit to a silhouette.
 
-Judged on real photographs it reads WORSE than leaving the head bald: it lands
-in the valley between "no hair" and "that person's hair", where the viewer reads
-the near-miss as wrong rather than the absence as stylised. So it is off. The
-measurement works; the representation is what is wrong, and fixing that needs
-real hair geometry — authored assets or strand reconstruction — not a better
-fit. `--hair` turns it on, and adds ~300 ms.
+The segmenter it used survives as `face3d/texture/segment.py`, because gating
+occluders out of the projection needs it regardless.
 
 ## Privacy
 

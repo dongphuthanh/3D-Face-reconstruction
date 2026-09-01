@@ -127,7 +127,7 @@ def vertex_normals(verts, faces):
 
 def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
                morph_targets=None, morph_names=None, uv=None, name="face",
-               texture_png=None, normals=None, eye_mask=None, hair_mask=None):
+               texture_png=None, normals=None, eye_mask=None):
     """Assemble the glTF JSON and its binary blob.
 
     verts (V,3), faces (F,3), joints (J,3) rest positions, parents (J,),
@@ -139,7 +139,6 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     eye_mask: (F,) bool, True for eyeball triangles. When given, the mesh is
     emitted as TWO primitives so the eyes can carry their own material -- skin
     is matte, eyes are wet and glossy, and one roughness cannot serve both.
-    hair_mask: (F,) bool, True for the inflated scalp shell (face3d/texture/hair.py).
     A third primitive, for the same reason and so a consumer can restyle or
     hide the hair without touching the head.
     """
@@ -174,8 +173,6 @@ def build_gltf(verts, faces, joints, parents, skin_weights, joint_names,
     parts = []
     if eye_mask is not None:
         parts.append(("eyes", np.asarray(eye_mask, bool), 0.15, False))
-    if hair_mask is not None:
-        parts.append(("hair", np.asarray(hair_mask, bool), 0.70, True))
 
     used = np.zeros(len(faces), bool)
     claimed = []

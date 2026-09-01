@@ -33,9 +33,7 @@ from face3d.geometry.facemask import eye_faces
 from face3d.geometry.flame_torch import FlameTorch
 from face3d.export.gltf import build_gltf, glb_bytes, vertex_normals
 from face3d.geometry.landmarks import LandmarkEmbedding
-from face3d.texture.hair import (FACE_SKIN, HAIR, MIN_THICKNESS, HairSegmenter,
-                         inflate, measure, project_px, scalp_faces,
-                         scalp_region, shell_offset)
+from face3d.texture.segment import FACE_SKIN, Segmenter
 from face3d.texture.project import (FACING_MAX, FACING_MIN, composite,
                             frequency_merge, load_static, project_photo)
 from face3d.texture.regions import crease_map, region_masks, unobserved_mask
@@ -74,15 +72,6 @@ PROJECT_CROP = 1024
 # head spans ~200 px however large the texture is. Measured at 512 it costs
 # 0.200 s, at 256 it costs 0.066 s, and the results are indistinguishable.
 PROJECT_SCREEN = 256
-
-# Hair does not fit in the crop the encoder uses. At margin 1.6 the skull top
-# projects ABOVE the frame on some subjects while the hair is clipped by the
-# top edge, so the silhouette comparison compares two things the crop has cut.
-# crop_square's NDC is proportional to its margin, so the fitted camera
-# retargets to the wider frame by scaling NDC by 1.6/3.0.
-HAIR_MARGIN = 3.0
-HAIR_SEG = 512
-HAIR_RATIO = CROP_MARGIN / HAIR_MARGIN
 
 # Resolution the occluder mask is segmented at. The model works at 256
 # internally and the mask is sampled through grid_sample, so it does not have
@@ -126,7 +115,7 @@ class Reconstructor:
     TEXGEN = ROOT / "runs" / "texgen_gen6" / "model.pt"
 
     def __init__(self, checkpoint=None, device="cpu", flame_model=None,
-                 project=True, hair=False, texgen=True):
+                 project=True, texgen=True):
         self.device = device
         self.project = project
         # The learned texture generator (face3d/texture/texgen.py). When on it
@@ -144,16 +133,6 @@ class Reconstructor:
         self.last_params = None
         self.skin_procedural = False
         self.outside_face = None
-        # OFF by default. The shell is a cap fitted to one view's silhouette,
-        # and on real photographs it reads worse than leaving the head bald --
-        # it cannot follow a hairstyle, so it lands in the valley between "no
-        # hair" and "that person's hair". Kept behind the flag rather than
-        # deleted because the measurement works; the representation is what is
-        # wrong, and that needs real hair geometry, not a better fit.
-        #
-        # Also rides on projection: the shell is only worth anything if the
-        # photograph's own hair can be painted onto it.
-        self.hair = hair and project
         checkpoint = pathlib.Path(checkpoint or self.CHECKPOINT)
         flame_model = flame_model or self.FLAME_MODEL
 
@@ -209,12 +188,6 @@ class Reconstructor:
         self.static = None
         self.eye_keep = None
         self.proj_mask = None
-        self.scalp = None
-        self.hair_faces = None
-        self.proj_mask_hair = None
-        self.hair_texel = None
-        self.facing_lo = None
-        self.facing_hi = None
         if cache.exists():
             emb = LandmarkEmbedding(
                 ROOT / "mediapipe_landmark_embedding" /
@@ -241,35 +214,6 @@ class Reconstructor:
                 a = F.interpolate(a, size=(self.tex_res, self.tex_res),
                                   mode="bilinear", align_corners=False)
                 self.eye_keep = a[0, 0].cpu().numpy()
-
-            if self.hair:
-                # The cranium, and the triangles covering it. Topology only.
-                self.scalp = scalp_region(self.flame, emb)
-                self.scalp_np = self.scalp.cpu().numpy()
-                self.hair_faces = scalp_faces(self.flame,
-                                              self.scalp).cpu().numpy()
-                # Which UV texels the shell occupies. The rasterised fid map
-                # from load_static() already answers this exactly, so there is
-                # no need for a second polygon rasterisation.
-                fid = self.static[0].cpu().numpy()
-                uvm = self.static[2].cpu().numpy()
-                tex_scalp = (self.hair_faces[np.clip(fid, 0, None)] & uvm)
-                # When hair is present the photograph is allowed onto the scalp
-                # as well as the face. Without this the shell is geometry with
-                # the albedo basis's bald scalp painted on it, which is worse
-                # than no shell at all.
-                self.proj_mask_hair = self._soften(
-                    np.maximum(self.face_mask, tex_scalp.astype(np.float32)))
-                # harmonise() must not repaint the shell with skin, but hair
-                # must not tint the fill colour either, so it is `keep`, not
-                # part of the mask.
-                self.hair_texel = self._soften(tex_scalp.astype(np.float32),
-                                               erode=0.0, blur=0.02)
-                # The crown grazes the camera, so the default facing band
-                # rejects it outright. Give the scalp its own, much lower.
-                sc = tex_scalp.astype(np.float32)
-                self.facing_lo = FACING_MIN + sc * (0.02 - FACING_MIN)
-                self.facing_hi = FACING_MAX + sc * (0.25 - FACING_MAX)
 
         if self.texgen_path:
             path = pathlib.Path(self.TEXGEN if texgen is True else texgen)
@@ -399,10 +343,10 @@ class Reconstructor:
         return np.asarray(img).astype(np.float32) / 255.0
 
     def _segmenter(self):
-        """One HairSegmenter per thread. Same rule as _detector: MediaPipe
+        """One Segmenter per thread. Same rule as _detector: MediaPipe
         graphs are stateful, so two requests sharing one corrupt each other."""
         if not hasattr(self._local, "seg"):
-            self._local.seg = HairSegmenter()
+            self._local.seg = Segmenter()
         return self._local.seg
 
     def _detector(self):
@@ -450,7 +394,7 @@ class Reconstructor:
         return uv
 
     def _bake_texture(self, albedo, eye=None, photo=None, params=None,
-                      verts=None, hair=False, photo_mask=None, crop=None,
+                      verts=None, photo_mask=None, crop=None,
                       skin_override=None):
         """Albedo coefficients (+ optionally the photograph) -> PNG bytes.
 
@@ -513,9 +457,8 @@ class Reconstructor:
 
             w = None
             if photo is not None and self.static is not None and self.texgen is None:
-                mask = self.proj_mask_hair if hair else self.proj_mask
-                lo = self.facing_lo if hair else FACING_MIN
-                hi = self.facing_hi if hair else FACING_MAX
+                mask = self.proj_mask
+                lo, hi = FACING_MIN, FACING_MAX
                 alb, w = project_photo(self.flame, photo, params, verts,
                                        self.static, face_mask=mask,
                                        screen=PROJECT_SCREEN,
@@ -532,28 +475,6 @@ class Reconstructor:
 
         arr = base.cpu().numpy()
 
-        # The back of the head is hair the camera never saw. Left alone the
-        # composite falls through to the albedo basis there, which is a BALD
-        # scalp -- so the shell came out with hair on top and skin behind it,
-        # meeting at a seam. Fill the unseen scalp with the mean of the hair we
-        # did see. Same argument as harmonise(): the fill is a colour actually
-        # measured on this person, not one invented.
-        if hair and w is not None and self.hair_texel is not None:
-            sc = self.hair_texel > 0.5
-            got = sc & (w.cpu().numpy() > 0.25)
-            if got.any():
-                fill = arr[got].mean(0)
-                # max(), not the blur alone. Blurring `got` on its own pulls
-                # the alpha below 1 INSIDE the measured region too, so the real
-                # hair gets averaged toward its own mean and comes out flat and
-                # pale -- which is exactly what the first attempt rendered.
-                # Measured texels keep full weight; the blur only ramps outward.
-                a = np.maximum(got.astype(np.float32),
-                               self._soften(got.astype(np.float32),
-                                            erode=0.0, blur=0.03))
-                a = np.where(sc, a, 1.0)[..., None]
-                arr = arr * a + fill[None, None, :] * (1.0 - a)
-
         # Replace the un-fitted neck and scalp with the fitted face's own tone.
         # Without this the basis mean shows through at 27% higher saturation
         # than the subject, and a correct face reads as washed out beside it.
@@ -566,8 +487,7 @@ class Reconstructor:
         # boundary the extension exists to remove.
         if self.face_mask is not None and self.texgen is None:
             arr = harmonise(arr, self.face_mask,
-                            blur=10.0 * self.tex_res / 256,
-                            keep=self.hair_texel if hair else None)
+                            blur=10.0 * self.tex_res / 256)
 
         arr = (arr * 255).astype(np.uint8)
         buf = io.BytesIO()
@@ -638,10 +558,6 @@ class Reconstructor:
                 pp = p.pad_to(self.flame.n_shape, self.flame.n_expr)
                 verts, _ = self.flame(pp.shape, pp.expr, pp.pose)
 
-        # --- 5b. hair --------------------------------------------------------
-        # Segment the photograph, measure how far the hair stands off the skull,
-        # and push the scalp out to meet it. See face3d/texture/hair.py -- this is a cap
-        # fitted to one view's silhouette, not a hairstyle.
         # --- 5b. what may be sampled ----------------------------------------
         # Gate the projection on the segmenter's face-skin class. This is the
         # single biggest quality fix available, because the dominant artefact
@@ -660,32 +576,8 @@ class Reconstructor:
                                       margin=CROP_MARGIN)
             cats = self._segmenter().categories(seg_crop)
             allow = cats == FACE_SKIN
-            if self.hair:
-                # The shell needs hair pixels, which are the very thing the
-                # face gate rejects. Opt-in, and it does re-admit a fringe.
-                allow = allow | (cats == HAIR)
             photo_mask = self._soften(allow.astype(np.float32),
                                       erode=0.0, blur=0.004)
-
-        # --- 5c. hair --------------------------------------------------------
-        hair_off = None
-        if verts is not None and self.hair:
-            wide, _ = crop_square(img, res["norm"], size=HAIR_SEG,
-                                  margin=HAIR_MARGIN)
-            hair_px = self._segmenter().categories(wide) == HAIR
-            vpx, per_unit = project_px(verts, p.cam, HAIR_SEG, HAIR_RATIO)
-            peak = measure(hair_px, vpx[self.scalp_np], per_unit)
-            # Bald, or a hat, or a handful of stray pixels. A 2 mm shell reads
-            # as a swollen skull, which is worse than leaving the head bald.
-            if peak >= MIN_THICKNESS:
-                with torch.no_grad():
-                    hair_off = shell_offset(self.flame, verts, p.cam, hair_px,
-                                            self.scalp, HAIR_SEG,
-                                            ndc_scale=HAIR_RATIO)
-                    # Texture is projected through the INFLATED mesh, so the
-                    # photograph's hair pixels land on the shell that now
-                    # reaches them.
-                    verts = inflate(verts, self.flame.faces, hair_off)
 
         # From here on we are building the ASSET, not running the model, so
         # everything moves to numpy. [0] drops the batch dimension.
@@ -719,10 +611,6 @@ class Reconstructor:
         # from it, and expression moves the scalp by almost nothing, so they
         # stay valid unchanged. Normals are recomputed on the neutral pose
         # because that is the surface being displaced here.
-        if hair_off is not None:
-            off = hair_off.cpu().numpy()[:, None]
-            neutral = neutral + vertex_normals(neutral, faces_np) * off
-
         # --- 8. texture ------------------------------------------------------
         # Re-crop the SAME box at higher resolution. crop_square's NDC mapping
         # is independent of `size`, so this is the identical field of view the
@@ -738,7 +626,6 @@ class Reconstructor:
 
         tex_png = self._bake_texture(p.albedo[0], p.eye[0], photo=photo,
                                      params=p, verts=verts,
-                                     hair=hair_off is not None,
                                      photo_mask=photo_mask, crop=x,
                                      skin_override=skin_override)
 
@@ -776,8 +663,5 @@ class Reconstructor:
             # Split the eyeballs into their own primitive so they can be wet
             # and glossy while the skin stays matte.
             eye_mask=self.eye_mask,
-            # Own primitive so a consumer can restyle or hide the hair without
-            # touching the head, and so it can be double-sided.
-            hair_mask=self.hair_faces if hair_off is not None else None,
         )
         return gltf, blob

@@ -19,7 +19,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-from face3d.io.gdrive import download as gdrive_download
+from gdrive import download as gdrive_download          # sibling in scripts/data/
 from face3d.learn.detect import FaceDetector, select_embedding_points, crop_square
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]

@@ -214,7 +214,7 @@ face3d/            the library — everything importable
                      texgen        learned texture generator + autoencoder
                      skin          11-parameter procedural skin layer
                      regions       named face regions as soft UV masks
-                     hair          scalp shell fitted to the photo (off by default)
+                     segment       MediaPipe portrait segmentation, to gate occluders
   learn/           the training side
                      encoder       Encoder protocol + ResNet-50 regressor
                      losses        landmark, photometric, identity, consistency

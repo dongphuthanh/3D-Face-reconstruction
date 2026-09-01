@@ -2,7 +2,7 @@
 
 Arc2Face is WebFace42M restored to 448px: 21M images across 1M identities,
 grouped by identity, in 35 archives of about 28 GB each. Downloading one to use
-a few percent of it would be absurd, so face3d/io/remotezip.py reads the central
+a few percent of it would be absurd, so scripts/data/remotezip.py reads the central
 directory over HTTP range requests and fetches only the wanted members. The
 index for a 28 GB archive reads in about 8 seconds.
 
@@ -34,7 +34,7 @@ from PIL import Image
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from face3d.learn.detect import FaceDetector, crop_square, select_embedding_points
-from face3d.io.remotezip import open_remote
+from remotezip import open_remote                       # sibling in scripts/data/
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ARC = ROOT / "data" / "arc2face"

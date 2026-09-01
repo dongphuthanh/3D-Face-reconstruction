@@ -38,7 +38,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from face3d.learn.detect import crop_square
-from face3d.texture.hair import FACE_SKIN
+from face3d.texture.segment import FACE_SKIN
 from face3d.texture.project import project_photo
 from webapp.pipeline import (CROP_MARGIN, PROJECT_CROP, PROJECT_SCREEN,
                              SEG_SIZE, Reconstructor)
