@@ -1,38 +1,3 @@
-// A CUDA replacement for face3d/render.py::_assign_faces.
-//
-//   export PATH=/usr/local/cuda/bin:$PATH
-//   nvcc -O3 -arch=sm_120 -o raster raster.cu
-//   ./raster "/mnt/c/Users/ADMIN/Documents/3D Face Project/out/raster_fixture"
-//
-// -arch=sm_120 because the 5070 is Blackwell. Build for the wrong arch and it
-// still compiles, then fails at launch with "no kernel image is available".
-//
-// WHAT THIS IS FOR. The PyTorch version cannot scatter without materialising
-// candidates, so it builds a (B, F, K*K, 3) tensor per size bucket. At B=8,
-// 224px that is 6.69 M candidate (face, pixel) pairs tested against 0.46 M
-// pixels of actual triangle area -- 14.4x more work than the geometry needs --
-// and 196 MB of peak memory. The median triangle spans 2.4 px while its whole
-// bucket pays for K*K. A kernel just loops the bounding box.
-//
-// It is 94% of rasterize (15.3 of 16.3 ms) and rasterize is ~25% of an encoder
-// training step, against a 48.5 ms ResNet-50 fwd+bwd.
-//
-// WHY THIS ONE IS WORTH DOING FIRST: it is the only part of the rasteriser that
-// is not differentiable. It runs under no_grad and returns integer ids;
-// rasterize() recomputes barycentrics from those ids in PyTorch, and that is
-// where gradients come from. So there is NO BACKWARD KERNEL to write -- the
-// hard half of a differentiable rasteriser -- and autograd keeps working.
-//
-// THE RULES, from the reference implementation. Match them exactly; ids must be
-// identical, not close.
-//   - A pixel belongs to the triangle with the smallest depth at its CENTRE,
-//     (x + 0.5, y + 0.5).
-//   - Depth: SMALLER is nearer.
-//   - Ties break to the LOWER face index.
-//   - -1 where no triangle covers the pixel.
-//   - Barycentrics >= 0 on all three edges counts as inside (the reference
-//     tests w >= 0, so it keeps exact-edge pixels).
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -62,9 +27,6 @@ static std::vector<T> slurp(const char *dir, const char *name) {
 
 int main(int argc, char **argv) {
     const char *dir = argc > 1 ? argv[1] : ".";
-
-    // meta.json is small and regular; parse the four numbers we need rather
-    // than pulling in a JSON library.
     char path[1024]; snprintf(path, sizeof(path), "%s/meta.json", dir);
     FILE *mf = fopen(path, "rb");
     if (!mf) { fprintf(stderr, "no meta.json in %s\n", dir); return 1; }
@@ -84,9 +46,6 @@ int main(int argc, char **argv) {
 
     float zmin = h_z[0], zmax = h_z[0];
     for (float z : h_z) { zmin = z < zmin ? z : zmin; zmax = z > zmax ? z : zmax; }
-    // float32 throughout, because the reference is: depth is a float32
-    // tensor there, so zmin/zmax/scale all are too. Computing this in
-    // double would quantise depth differently and break exact ties.
     float scale = (float)(1 << 30) / (zmax - zmin + 1e-12f);
     unsigned long long BIG = (unsigned long long)((1LL << 30) * (long long)F + F);
 
@@ -109,16 +68,6 @@ int main(int argc, char **argv) {
     std::vector<int> h_order(B * F);
     for (int i = 0; i < B * F; i++) h_order[i] = i;
     CHECK(cudaMemcpy(d_order, h_order.data(), h_order.size() * 4, cudaMemcpyHostToDevice));
-    // One lambda per phase, so each can be timed on its own. When you add the
-    // keys kernel and the sort, give them lambdas here too and put them in
-    // `run` -- and in the timing below. A sort you do not measure is a sort
-    // you cannot tell is worth it.
-    // A bbox area can never exceed H*W, so that many bits always suffice.
-    // Radix sort costs one pass per 4-8 bits, so telling CUB the real range
-    // instead of the default 32 removes half the passes. Deriving it beats
-    // hard-coding: too few bits sorts only the low ones and silently gives a
-    // partial order -- harmless for correctness, since min is commutative,
-    // but it quietly wastes the whole point of sorting.
     int end_bit = 0;
     while ((1u << end_bit) <= (unsigned)(H * W) && end_bit < 32) end_bit++;
     printf("radix bits: %d (H*W = %d)\n", end_bit, H * W);

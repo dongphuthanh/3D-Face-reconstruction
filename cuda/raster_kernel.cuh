@@ -1,16 +1,7 @@
-// The rasteriser kernels, shared by the standalone harness (raster.cu) and the
-// PyTorch extension (raster_ext.cu). One definition, so the thing being
-// benchmarked and the thing being shipped cannot drift apart.
-//
-// A CUDA replacement for face3d/render.py::_assign_faces. See RASTERISATION.md
-// for the maths and cuda/raster.cu for how to build and test it standalone.
 #pragma once
 
 #include <cuda_runtime.h>
 
-// Depth and face id packed into one 64-bit key so a single atomicMin resolves
-// the winner AND the tie-break together. The Python version already does this
-// for scatter_reduce; here it is what the hardware wants anyway.
 __device__ __forceinline__ unsigned long long pack(float z, int fid,
                                                    float zmin, float scale,
                                                    int nfaces) {
@@ -71,9 +62,9 @@ __global__ void assign_faces(const float *__restrict__ verts_px,  // (B,V,2)
     int yhi  = min(H-1, (int)floorf(fmaxf(fmaxf(y0, y1), y2)));
 
     for (int y = ylo; y <= yhi; y++) {
-        float py = y + 0.5;
+        float py = y + 0.5f;
         for (int x = xlo; x <= xhi; x++) {
-            float px = x + 0.5;
+            float px = x + 0.5f;
             float w0 = ((y1-y2)*(px-x2) + (x2-x1)*(py-y2)) * _d;
             float w1 = ((y2-y0)*(px-x2) + (x0-x2)*(py-y2)) * _d;
             float w2 = 1 - w0 - w1;
@@ -88,11 +79,7 @@ __global__ void assign_faces(const float *__restrict__ verts_px,  // (B,V,2)
 
 }
 
-// Fill on the DEVICE. cudaMemset cannot do this -- it writes a BYTE pattern and
-// BIG is not byte-uniform -- so the first version of this harness allocated a
-// host vector and copied it over on every call, INSIDE the timing loop. That is
-// a 3.2 MB host allocation plus a PCIe transfer per iteration, and it dwarfed
-// the kernel being measured.
+
 __global__ void fill(unsigned long long *buf, long long n, unsigned long long v) {
     long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
     if (i < n) buf[i] = v;

@@ -28,7 +28,18 @@ if [ ! -d "$FIX" ]; then
 fi
 
 echo "building..."
-if ! nvcc -O3 -arch=sm_120 -o raster raster.cu 2>build.log; then
+# On Windows, CUB pulls in CCCL, which refuses to compile against MSVC's
+# traditional preprocessor; -lineinfo is for Nsight source correlation.
+FLAGS="-O3 -std=c++17 -arch=sm_120 -lineinfo"  # CUB requires C++17
+EXE=./raster
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
+    FLAGS="$FLAGS -Xcompiler /Zc:preprocessor"
+    # nvcc writes raster.exe here, and a stale ELF `raster` from a WSL
+    # build shadows it -- bash picks that up and dies on Exec format error.
+    EXE=./raster.exe ;;
+esac
+
+if ! nvcc $FLAGS -o "$EXE" raster.cu 2>build.log; then
     echo "BUILD FAILED"; grep -E "error" build.log | head -20; exit 1
 fi
 
@@ -38,7 +49,7 @@ printf -- '----------------------------------------------------------------\n'
 for dir in "$FIX"/*/; do
     name=$(basename "$dir")
     [ -f "$dir/meta.json" ] || continue
-    out=$(./raster "$dir" 2>&1)
+    out=$("$EXE" "$dir" 2>&1)
     # Read the per-phase table. `kern` is the rasteriser alone; `ms` is the whole
     # pipeline including keys, sort, fill and unpack. Optimising the first at the
     # expense of the second looks like a win and is not one, so both are shown.
