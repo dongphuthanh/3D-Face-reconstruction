@@ -23,7 +23,17 @@ from torch.utils.data import Dataset
 
 
 class FFHQCrops(Dataset):
-    def __init__(self, root, size=224, split="train", val_frac=0.1, seed=0):
+    def __init__(self, root, size=224, split="train", val_frac=0.1, seed=0,
+                 skin=None):
+        """skin: path to a skin_<res>.npz from scripts/data/make_seg_masks.py.
+
+        When given, each item carries a `skin` mask marking which pixels the
+        segmenter calls FACE_SKIN. The photometric mask is otherwise the
+        rendered mesh silhouette, which is mesh-side -- it selects triangles,
+        not photograph pixels -- so hair and background inside the silhouette
+        still reach the loss. Measured at 16.6% of loss pixels on FFHQ; see
+        scripts/eval/diag_photometric_mask.py.
+        """
         root = pathlib.Path(root)
         cache = root / f"landmarks_{size}.npz"
         if not cache.exists():
@@ -44,6 +54,22 @@ class FFHQCrops(Dataset):
         self.dir = root / "crops"
         self.size = size
 
+        self.skin = None
+        if skin is not None:
+            z = np.load(skin)
+            # The mask cache keys carry the file extension; the landmark cache
+            # does not. Normalise rather than rebuild either.
+            mk = {str(k).rsplit(".", 1)[0]: i for i, k in enumerate(z["keys"])}
+            self.skin_res = int(z["res"])
+            packed = z["masks"]
+            rows = [mk.get(k, -1) for k in self.keys]
+            missing = sum(r < 0 for r in rows)
+            if missing:
+                print(f"    skin masks: {missing}/{len(rows)} crops have none; "
+                      f"those fall back to the mesh silhouette")
+            self.skin = packed
+            self.skin_row = np.array(rows)
+
     def __len__(self):
         return len(self.keys)
 
@@ -57,8 +83,20 @@ class FFHQCrops(Dataset):
         # Those pixels are not evidence about the face and must not enter the
         # photometric loss.
         valid = torch.from_numpy((arr.sum(-1) > 0).astype(np.float32))
-        return {"image": img, "landmarks": torch.from_numpy(self.lmk[i]),
+        item = {"image": img, "landmarks": torch.from_numpy(self.lmk[i]),
                 "valid": valid, "key": self.keys[i]}
+        if self.skin is not None:
+            r = self.skin_row[i]
+            if r < 0:
+                m = np.ones((self.size, self.size), np.float32)
+            else:
+                R = self.skin_res
+                bits = np.unpackbits(self.skin[r])[:R * R].reshape(R, R)
+                m = np.asarray(Image.fromarray(bits * 255)
+                               .resize((self.size, self.size), Image.BILINEAR))
+                m = (m.astype(np.float32) / 255.0)
+            item["skin"] = torch.from_numpy(m)
+        return item
 
 
 class IdentityPairs(Dataset):

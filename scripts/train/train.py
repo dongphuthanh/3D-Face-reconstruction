@@ -67,7 +67,7 @@ def main():
     ap.add_argument("--w-eye", type=float, default=0.0,
                     help="DECA's eye-closure term (they use 1.0): match the "
                          "eyelid gap directly. The plain landmark loss averages "
-                         "over 105 points, so eyelids are under 4% of it and "
+                         "over 105 points, so eyelids are under 4%% of it and "
                          "every eye comes out half-open")
     ap.add_argument("--w-lip", type=float, default=0.0,
                     help="DECA's lip-distance term (they use 0.5): same argument "
@@ -119,7 +119,7 @@ def main():
                          "batch each step and driving swap exactly like the "
                          "first. Concatenating instead would let corpus size "
                          "decide the mix -- CelebA's 8,557 subjects against "
-                         "DigiFace's 103,837 is 7.6%, effectively nothing. A "
+                         "DigiFace's 103,837 is 7.6%%, effectively nothing. A "
                          "separate stream gives each an equal say whatever "
                          "their sizes")
     ap.add_argument("--identity-cache2", default="")
@@ -148,6 +148,12 @@ def main():
                     action="store_false", default=True,
                     help="rasterise both paired views (about 45%% more VRAM); "
                          "by default only the weak view is rendered")
+    ap.add_argument("--photo-mask", default=None,
+                    help="skin_<res>.npz from scripts/data/make_seg_masks.py. "
+                         "Gates the photometric loss on the segmenter's "
+                         "FACE_SKIN class, so hair and background inside the "
+                         "mesh silhouette stop reaching the loss (measured at "
+                         "16.6%% of loss pixels on FFHQ)")
     ap.add_argument("--skin-mask", type=float, default=0.045,
                     help="face-region radius in metres for the photometric mask "
                          "(story C2); 0 disables and scores the whole silhouette")
@@ -191,8 +197,8 @@ def main():
               f"  (>= {a.identity_min_images} images each"
               f"{', ' + a.identity_cache if a.identity_cache else ''})")
     else:
-        tr = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train")
-        va = FFHQCrops(ROOT / "data" / "ffhq", a.size, "val")
+        tr = FFHQCrops(ROOT / "data" / "ffhq", a.size, "train", skin=a.photo_mask)
+        va = FFHQCrops(ROOT / "data" / "ffhq", a.size, "val", skin=a.photo_mask)
     dl = DataLoader(tr, batch_size=a.batch, shuffle=True, num_workers=4,
                     drop_last=True, persistent_workers=True)
     vl = DataLoader(va, batch_size=a.batch, num_workers=2)
@@ -212,7 +218,7 @@ def main():
     mix_dl = None
     if a.mix_ffhq > 0:
         mix_root = pathlib.Path(a.mix_data) if a.mix_data else ROOT / "data" / "ffhq"
-        mix_ds = FFHQCrops(mix_root, a.size, "train")
+        mix_ds = FFHQCrops(mix_root, a.size, "train", skin=a.photo_mask)
         mix_dl = DataLoader(mix_ds, batch_size=a.mix_batch or a.batch, shuffle=True,
                             num_workers=2, drop_last=True, persistent_workers=True)
         print(f"    mixing {len(mix_ds)} {mix_root.name} photographs "
@@ -265,6 +271,13 @@ def main():
             batch = flatten_pairs(batch, k=a.images_per_identity)
         img = batch["image"].to(DEV, non_blocking=True)
         gt = batch["landmarks"].to(DEV, non_blocking=True)
+        # Ride the skin mask along as a 4th channel. affine_view is
+        # channel-agnostic, so this is the only way to guarantee the mask gets
+        # exactly the geometry the photograph gets -- a separately transformed
+        # mask would drift from the image under any augmentation change.
+        skin = batch.get("skin")
+        if skin is not None:
+            img = torch.cat([img, skin.to(DEV, non_blocking=True)[:, None]], 1)
         paired = prepaired or ((a.w_con > 0 or a.w_swap > 0 or a.pair) and augment)
         if paired and not prepaired:
             img, gt = two_views(img, gt)
@@ -278,6 +291,8 @@ def main():
         # Validity is recomputed from pixels rather than taken from the cache:
         # a rotated or scaled view has its own black borders, so the ingest-time
         # mask no longer describes this image.
+        if skin is not None:
+            img, skin = img[:, :3], img[:, 3]
         valid = img.sum(1) > 0
         emb = batch.get("embedding")
         if emb is not None:
@@ -321,7 +336,13 @@ def main():
             if a.swap_photometric:
                 r_sw, m_sw = renderer.render(v_sw[:n_render], sw[:n_render])
                 l_swap = l_swap + photometric_loss(r_sw, target, m_sw & valid[:n_render])
-        l_pho = photometric_loss(render, target, mask & valid[:n_render])
+        pho_mask = mask & valid[:n_render]
+        if skin is not None:
+            # The segmenter is the only thing here that knows a pixel is hair
+            # rather than forehead. Threshold rather than weight: a soft mask
+            # would still let an occluder pull on geometry, just less.
+            pho_mask = pho_mask & (skin[:n_render] > 0.5)
+        l_pho = photometric_loss(render, target, pho_mask)
         l_reg = regularization(pred, w_light=a.w_light)
 
         # Identity: composite the render into the photograph over the face
