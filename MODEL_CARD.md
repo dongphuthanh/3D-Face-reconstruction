@@ -2,40 +2,25 @@
 
 Photograph → FLAME parameters → rigged glTF head.
 
-## Which checkpoint to ship
+## The checkpoint
 
-**`runs/deca_open` unless you have a reason not to.** It is the only
-licence-clean checkpoint, the only one with predicted eyes, and it gives up
-nothing measurable to do it. `deca_joint` remains marginally ahead on expression
-if the work is non-commercial and stays private.
+**`runs/deca_open`** is the model. One checkpoint ships; there is nothing to
+choose between.
 
-| | deca_full | deca_celswap | deca_joint | **deca_open** |
-|---|---|---|---|---|
-| FLAME basis | 2020 | 2020 | 2020 | **2023 Open** |
-| mean-face baseline | 1.3554 | 1.3554 | 1.3554 | **1.3693** |
-| NoW median (best α) | 1.2679 | 1.2408 | 1.2688 | 1.2798 |
-| **gain over own baseline** | 0.0875 | **0.1146** | 0.0866 | 0.0895 |
-| closure, CelebA held-out (real) | 6.2 / 13.4% | 5.2 / 12.2% | **5.0 / 11.1%** | — |
-| closure, DigiFace held-out | 6.2 / 11.8% | 7.5 / 16.2% | 6.3 / 11.9% | **6.6 / 11.6%** |
-| identity ratio | 1.15 | 1.14 | **1.16** | 1.14 |
-| iris tracks the photo | no | no | no | **r = +0.822** |
-| licence-clean weights | no | no | no | **yes** |
+| | |
+|---|---|
+| FLAME basis | FLAME 2023 Open (CC-BY-4.0) |
+| Training corpora | DigiFace-1M + FFHQ, permissive subset |
+| Encoder | ResNet-50, ImageNet-pretrained |
+| Eyes | predicted — iris colour tracks the photograph at r = +0.822 over 80 faces |
+| Redistributable | yes, with attribution to FLAME |
 
-**Compare the gain row, not the median row.** deca_open sits on a different
-basis whose mean face is a different mesh (1.3693 against 1.3554), so its
-median is not commensurable with the others. Against its own baseline it takes
-marginally more of the available distance than deca_full does.
-
-`deca_celswap` wins NoW by 0.028 mm. `deca_joint` wins everything that scores
-what a viewer actually sees — expression fidelity on both domains, and
-recognisability. NoW scores a *neutral* mesh, so it is an identity-shape metric
-and blind to expression by construction (`now_predict.py --neutral` zeroes
-expression and pose). For a rigged head, where the neutral mesh is the base and
-blendshapes carry expression, the metrics that favour `deca_joint` are the ones
-aligned with the product.
-
-Seed variance has never been measured. A 0.028 mm gap is below what this setup
-can resolve, so treat the NoW ordering as a tie.
+It is licence-clean end to end: a CC-BY basis, a corpus that permits
+redistribution of trained models, and no DECA-derived weights anywhere. Earlier
+checkpoints in this project's history were trained against FLAME 2020, whose
+licence forbids redistribution, and some against CelebA, which forbids
+commercial use of derived data. None of them ship, and the comparisons that
+retired them are in [FINDINGS.md](FINDINGS.md).
 
 ## Inference
 
@@ -43,11 +28,13 @@ can resolve, so treat the NoW ordering as a tie.
 SHAPE_CALIBRATION = 0.40      # face3d/learn/encoder.py
 ```
 
-Non-negotiable, and not a tuning nicety. The raw prediction (α=1.0) scores
-**1.5485 mm on NoW — worse than emitting the FLAME mean face (1.3554)**.
-Discarding 60% of the predicted shape deviation is the only reason the model
-beats a constant mesh. `predict(calibrate=True)` applies it; anything calling
-`predict()` without it ships an over-confident face.
+Non-negotiable, and not a tuning nicety. **The raw prediction is worse than
+emitting a constant mesh** — 1.5485 mm against the mean face's 1.3554 on the
+FLAME 2020 checkpoints, where the full α sweep was run. Discarding 60% of the
+predicted shape deviation is the only reason the model beats the mean face.
+`deca_open`'s calibration was re-measured on its own basis rather than assumed,
+and lands at the same 0.40. `predict(calibrate=True)` applies it; anything
+calling `predict()` without it ships an over-confident face.
 
 Crop at **margin 1.6** with MediaPipe landmarks. Every corpus and the NoW eval
 use 1.6, and a mismatch is a distribution shift that has bitten this project
@@ -73,13 +60,15 @@ number that means something else.
 
 | | NoW non-metrical median |
 |---|---|
-| FLAME mean face (ignores the photo) | 1.3554 |
-| **this pipeline** | **1.2408** |
+| FLAME mean face (ignores the photo) | 1.3693 |
+| **this pipeline** | **1.2798** |
 | DECA | 1.09 |
 | MICA (best published) | 0.98 |
 
-The whole achievable band is therefore ~0.375 mm wide. This pipeline has taken
-~31% of it, or ~43% of the distance to DECA. Monocular identity shape is
+The whole achievable band is therefore ~0.39 mm wide. This pipeline has taken
+~23% of it, or ~32% of the distance to DECA. The mean-face baseline is measured
+on the same FLAME 2023 Open basis the model uses; against FLAME 2020's 1.3554
+the numbers are not comparable, because the mean face is a different mesh. Monocular identity shape is
 genuinely underdetermined and every published number sits close to the constant
 baseline.
 
@@ -121,83 +110,56 @@ and that includes the FLAME basis, not just the image corpora.
 
 | asset | terms | trained models redistributable |
 |---|---|---|
-| **FLAME 2020** | non-commercial research | **no** |
 | FLAME 2023 Open | CC-BY-4.0 | yes, with attribution |
 | DigiFace-1M | R-UDA v1.0 | **yes, explicitly** |
 | FFHQ (permissive subset) | CC BY / PD / CC0 | yes |
-| CelebA | non-commercial, no redistribution of "derived data" | **no** |
 | MediaPipe segmenter / landmarker | Apache-2.0 | yes |
 
-**`runs/deca_open` is licence-clean.** FLAME 2023 Open (CC-BY-4.0) with
-DigiFace + FFHQ only — no CelebA, no FLAME 2020. It is the model to use for
-anything public, and the only one whose exported meshes may be redistributed
-(with attribution to FLAME).
+That is the whole list, and it is why one checkpoint ships. Exported meshes may
+be redistributed with attribution to FLAME. No DECA-derived weights are used
+anywhere — where the code says "DECA weights" it means their published *loss
+weights*, read from their config, not their model.
 
-Its NoW median is 1.2798, which must NOT be read against the table above: the
-mean face is a different mesh, measured at 1.3693 mm against FLAME 2020's
-1.3554. Compare gains — deca_full takes 0.0875 of its baseline, deca_open
-0.0895 of its own, so the clean basis costs nothing. Identity ratio 1.14 and
-closure 6.6 / 11.6% are ties with deca_full. SHAPE_CALIBRATION stays 0.40,
-re-measured rather than assumed.
+Two constraints that shaped this and are worth stating because they are easy to
+trip over:
 
-It is also the only model with predicted eyes: iris colour correlates with the
-photographed iris at r = +0.822 over 80 faces. Every other checkpoint emits the
-albedo basis mean's blurred brown iris for every subject.
-
-**The older checkpoints are not licence-clean, `deca_full` included.** Every run was
-trained against `FLAME2020/generic_model.pkl`. `face3d/assets.py` lists FLAME
-2020 first in `CANDIDATES`, so it wins over the `FLAME2023Open` copy sitting
-beside it, silently. Every GLB this project has exported is FLAME 2020 geometry.
-
-Separately, `deca_joint` and `deca_celswap` use CelebA, whose agreement forbids
-exploiting "any portion of derived data" commercially. `deca_full` avoids that
-one — DigiFace + FFHQ only — so it is the *corpus*-clean option, but the FLAME
-2020 dependency binds it equally.
-
-Getting to genuinely clean weights means retraining against FLAME 2023 Open:
-
-```bash
-FACE3D_MODEL=FLAME2023Open/flame2023_Open.pkl python scripts/train/train.py ...
-```
-
-An existing checkpoint cannot simply be repointed. The two bases share topology
-(5023 verts, 9976 faces, byte-identical `faces`) and are equally expressive —
-first 100 components hold 99.20% of shape variance in 2020 against 98.87% in
-2023 Open, and 2023 Open's leading component is slightly *larger* (3.815 mm
-against 3.585 mm at 1σ). But their axes are rotated relative to each other:
+**A FLAME 2020 checkpoint cannot be repointed at the 2023 Open basis.** The two
+share topology (5023 verts, 9976 faces, byte-identical `faces`) and are equally
+expressive — the first 100 components hold 99.20% of shape variance in 2020
+against 98.87% in 2023 Open. But their axes are rotated relative to each other:
 expressing either basis's top-100 directions in the other's span retains 81% of
 the energy, in both directions. The coefficients mean different things, so a
-2020-trained encoder emits nonsense through a 2023 basis.
+2020-trained encoder emits nonsense through a 2023 basis. Accuracy is not the
+cost — 2023 Open is not the weaker basis — the cost is one retraining run, which
+is what produced this checkpoint.
 
-The good news is that accuracy is not the cost — 2023 Open is not the weaker
-basis. The cost is one retraining run.
+**`face3d/assets.py` used to resolve FLAME implicitly**, listing 2020 first in
+`CANDIDATES`, so it silently won over the `FLAME2023Open` copy beside it. That
+is how a project can believe it is shipping a clean basis while every exported
+GLB carries a non-redistributable one. Pass the basis explicitly.
 
-This project is non-commercial, so nothing is currently violated.
-
-Not legal advice. Get real advice before any commercial use.
+This project is non-commercial. Not legal advice; get real advice before any
+commercial use.
 
 ## Reproducing
 
 ```bash
-# deca_joint
-python scripts/train/train.py --identity-data data/digiface \
-  --identity-data2 data/celeba --identity-cache2 landmarks_224_swap.npz \
-  --identity-min-images2 4 --identity2-batch 8 --w-identity2 1.0 \
-  --epochs 3 --batch 8 -k 4 --lr 2e-4 \
+FACE3D_MODEL=FLAME2023Open/flame2023_Open.pkl python scripts/train/train.py \
+  --identity-data data/digiface --epochs 3 --batch 8 -k 4 --lr 2e-4 \
   --w-swap 1.0 --w-id 0.2 --w-eye 1.0 --w-lip 0.5 \
-  --mix-ffhq 1.0 --mix-batch 16 --out runs/deca_joint
-
-# deca_full (licence-clean)
-python scripts/train/train.py --identity-data data/digiface --epochs 3 --batch 8 -k 4 \
-  --lr 2e-4 --w-swap 1.0 --w-id 0.2 --w-eye 1.0 --w-lip 0.5 \
-  --mix-ffhq 1.0 --mix-batch 16 --out runs/deca_full
+  --mix-ffhq 1.0 --mix-batch 16 --out runs/deca_open
 ```
 
-Evaluation: `scripts/eval/now_predict.py` + Docker (`face3d.now.run_docker_eval`),
-`scripts/eval/eval_closure.py --data {digiface,celeba}`, `scripts/eval/diag_identity.py`,
-`scripts/tools/render_compare.py`. Export: `scripts/tools/export_head.py --image X
---out head.glb` (defaults to the deca_open / FLAME 2023 Open pair; pass
-`--checkpoint` and `--flame-model` together or not at all).
+`FACE3D_MODEL` is not optional. Without it `face3d/assets.py` resolves FLAME
+implicitly and picks up whichever basis it finds first.
+
+Evaluation: `scripts/eval/now_predict.py` + Docker
+(`face3d.export.now.run_docker_eval`), then `scripts/eval/eval_closure.py`,
+`scripts/eval/diag_identity.py`, `scripts/tools/render_compare.py`.
+
+Export: `scripts/tools/export_head.py --image X --out head.glb` — defaults to
+the `deca_open` / FLAME 2023 Open pair; pass `--checkpoint` and `--flame-model`
+together or not at all.
 
 ## Export
 

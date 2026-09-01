@@ -39,61 +39,64 @@ and skin-tone controls.
 
 ## Results
 
-**NoW benchmark, non-metrical protocol**, 20 validation subjects:
+**How close is the mesh?** NoW benchmark, non-metrical protocol:
 
-| | median | vs. its own baseline |
-|---|---|---|
-| MICA (3D-supervised, published) | 0.98 mm | — |
-| DECA (published) | ~1.09 mm | — |
-| **this project — `deca_open`** | **1.2798 mm** | **−0.0895** |
-| FLAME mean face (2023 Open basis) | 1.3693 mm | baseline |
+| | median error |
+|---|---|
+| FLAME mean face — ignores the photo entirely | 1.3693 mm |
+| **this project** | **1.2798 mm** |
+| DECA | ~1.09 mm |
+| MICA — best published | 0.98 mm |
 
-The honest framing: predicting the *average face* scores 1.3693 mm, and the
-state of the art is 0.98 mm. The entire available headroom is ~0.39 mm, and this
-model takes about a quarter of it. That gap is a data problem, not a tuning one
-— MICA closes it with 3D scan supervision, which this project has no licence to
-use. See [MODEL_CARD.md](MODEL_CARD.md) for checkpoint selection and
+The baseline matters more than the score. Predicting the *average face* gets you
+1.3693 mm, so the entire band worth competing in is ~0.39 mm wide and this takes
+about a quarter of it. Monocular identity shape is underdetermined; every
+published result sits close to that constant baseline. MICA beats everyone with
+three orders of magnitude *less* data — 2,315 subjects with real 3D scans —
+which says the bottleneck is the kind of supervision, not the amount.
+
+**How good is the texture?** Mean absolute error against the photograph, over
+the face region:
+
+| | |
+|---|---|
+| the FLAME albedo basis alone | 0.1497 |
+| **this project** | **0.0594** — 60% closer |
+
+For scale, an autoencoder allowed to *see* the target reaches 0.0403, so this
+covers about four fifths of what is achievable with this representation.
+
+One number is load-bearing enough to name: `SHAPE_CALIBRATION = 0.40`. The raw
+prediction scores **worse than a constant mesh**; keeping only 40% of the
+predicted shape deviation is what makes the model beat the mean face. The
+encoder is over-confident, and that constant is the measurement that says so.
+
+See [MODEL_CARD.md](MODEL_CARD.md) for the shipped checkpoint and its limits,
 [FINDINGS.md](FINDINGS.md) for how each gain was won or lost.
-
-**The single most important number in the repo:**
-
-```python
-SHAPE_CALIBRATION = 0.40      # face3d/learn/encoder.py
-```
-
-The raw prediction scores **1.5485 mm — worse than emitting a constant mesh**.
-Discarding 60% of the predicted shape deviation is the only reason this beats
-the mean face. The model is over-confident, and the calibration constant is the
-measurement that says so.
-
----
 
 ## Engineering highlights
 
 ### Custom CUDA rasteriser
 
 The differentiable rasteriser was pure PyTorch (nvdiffrast does not build on
-this machine). Its z-buffer pass dominated training, so it was rewritten as a
-CUDA kernel: **one thread per triangle, bounding-box traversal, and a lock-free
-depth test that resolves the winner and the tie-break in a single `atomicMin`
-on a packed 64-bit `(depth, face_id)` key.**
+this machine), and its z-buffer pass dominated training. Rewritten as a CUDA
+kernel: **one thread per triangle, bounding-box traversal, and a lock-free depth
+test that resolves the winner and the tie-break in a single `atomicMin` on a
+packed 64-bit `(depth, face_id)` key.**
 
-| | |
-|---|---|
-| vs. the equivalent tensor-op implementation | **51.8×** |
-| encoder training step | **24.6% faster** (1.33×) |
-| correctness | bit-exact — 0 mismatched pixels, 8 fixture cases + 4 batch/resolution configs |
+**52× faster** than the equivalent tensor-op version, taking **25% off the
+training step** — and **bit-exact** against it, zero mismatched pixels across
+eight fixture cases and four batch/resolution configurations.
 
-Bit-exactness is a *consequence* of the packed-key design: because the face
-index occupies the low bits, ties break deterministically to the lower index,
-so the kernel and the reference agree pixel-for-pixel rather than approximately.
+Bit-exactness is a *consequence* of the packed key, not a lucky result. The face
+index sits in the low bits, so ties break deterministically to the lower index
+and the two implementations agree pixel-for-pixel rather than approximately.
 
-Profiling with Nsight Compute then found FP64 as the top pipeline at 63%
-utilisation in a kernel that should contain no double-precision work — 271,511
-FP64 instructions traced to `y + 0.5`, where the bare `0.5` is a double literal
-promoting the whole expression. Consumer Blackwell runs FP64 at 1/64 rate.
-The fix was `0.5f`; `cuobjdump -sass` confirms zero `DADD`/`DMUL`/`DFMA` remain.
-That one character **doubled kernel throughput**.
+Profiling with Nsight Compute then found FP64 as the top pipeline in a kernel
+that should contain no double-precision work at all — traced to `y + 0.5`, where
+a bare `0.5` is a double literal that promotes the whole expression. Consumer
+Blackwell runs FP64 at 1/64 rate. The fix was `0.5f`, verified in the
+disassembly, and it **doubled kernel throughput**.
 
 Architecturally this matches the rasteriser DECA ships, with one difference:
 DECA's does `atomicMin` and then a *separate* re-read to decide whether to write
@@ -106,21 +109,14 @@ disagree, and exact ties let two threads both write. Packing removes the window.
 Projecting the photograph into UV space directly gives high fidelity and ugly
 failures — occluders, seams, and smeared texels wherever the surface turns away
 from camera. Auditing 14 faces, 8 carried an occluder; that, not smearing, was
-the dominant artifact.
+the dominant artefact.
 
 So the projection is a *target*, not the output. A generator predicts a bounded
-residual over a PCA basis (`tanh × AMPLITUDE`) plus **11 interpretable
-parameters** — skin tone, freckles, crease depth, lip and brow colour — which
-guarantees the result stays on the manifold of plausible skin no matter what the
-photograph contains:
-
-| | masked L1 |
-|---|---|
-| PCA basis alone | 0.1497 |
-| **generator + procedural layer (ships)** | **0.0594** — 60.3% closer |
-| autoencoder that *sees* the target (upper bound) | 0.0403 — 73.1% closer |
-
-Deliberately trading similarity for the guarantee that nothing weird appears.
+residual over a PCA basis (`tanh × amplitude`) plus 11 interpretable parameters
+— skin tone, freckles, crease depth, lip and brow colour. The bound is the
+point: whatever the photograph contains, the result cannot leave the manifold of
+plausible skin. Similarity is traded for the guarantee that nothing weird
+appears.
 
 ### Evaluation that can say "no"
 
@@ -157,28 +153,13 @@ rather than on whether a render looks like a face.
 
 ---
 
-## Performance
-
-RTX 5070 Laptop (Blackwell sm_120, 8 GB), torch 2.9.0+cu130, CUDA 13.3.
-
-| | |
-|---|---|
-| FLAME forward (batch 32) | 16,000 meshes/s, 66 MB VRAM |
-| Rasteriser z-buffer, CUDA (batch 8, 224px) | 0.177 ms |
-| — same, tensor-op implementation | 9.17 ms |
-| Encoder training step (batch 8, 224px) | 27.8 ms |
-| Torch↔NumPy FLAME parity | 8.3e-17 m |
-
-Timings are medians of 5 separate processes, 50 reps after 20 warmup.
-
----
-
 ## Running it
 
 ```bash
-make setup     # pinned deps
-make test      # full suite against whichever FLAME model is on disk
-make test-ci   # same suite against a synthetic fixture, no licensed assets
+make setup       # pinned deps, from the CUDA index matching the local toolkit
+make check-cuda  # which torch build is installed, and does the kernel load
+make test        # full suite against whichever FLAME model is on disk
+make test-ci     # same suite against a synthetic fixture, no licensed assets
 
 python -m uvicorn webapp.server:app --port 8000    # browser demo + /docs
 bash cuda/test_raster.sh                           # rasteriser fixtures, 8 cases
@@ -189,9 +170,20 @@ JIT-compiles it on first use and falls back to the PyTorch path with a stated
 reason if no toolchain is present. `FACE3D_NO_CUDA_RASTER=1` forces the
 fallback. It requires a torch build matching the installed CUDA major version.
 
-> **Known gap:** `make setup` still pins the cu128 index while the CUDA
-> extension needs cu130 to match CUDA 13.3. A fresh install gets the fallback
-> path, not the kernel.
+`make setup` installs torch from the CUDA index matching the local toolkit
+(cu130 for CUDA 13.3) and then runs `make check-cuda`, which reports the build
+and whether the kernel loads:
+
+```
+torch 2.9.0+cu130   cuda 13.0   gpu True
+cuda rasteriser: ok
+```
+
+That check exists because the failure is quiet. A torch built against a
+different CUDA does not error — the extension just falls back to the PyTorch
+path and training runs ~25% slower with nothing in the log. If you are swapping
+CUDA builds, use `make setup-force`: pip treats `2.9.0+cu128` and `2.9.0+cu130`
+as the same version and will not replace one with the other.
 
 Blackwell needs a matching CUDA wheel either way — older ones install cleanly
 and then fail at the first kernel launch.
@@ -247,7 +239,7 @@ tests/             every check — run_tests.py runs them in dependency order
   fixtures/          the synthetic FLAME model, and the rasteriser fixtures
 
 scripts/           entry points, grouped by what they are for
-  data/            ingest FFHQ / CelebA / DigiFace / Arc2Face, build corpora
+  data/            download, detect, crop and cache the image corpora
   train/           train.py, train_overfit.py, train_texgen.py
   eval/            NoW prediction + harness validation, closure, ablations, diagnostics
   tools/           export a head, render a comparison, visualise predictions
@@ -259,33 +251,39 @@ webapp/            FastAPI service + Three.js viewer
 
 ## Assets — not included
 
-Every asset is licensed and must be obtained separately; every one has a row in
-the register in §9 of the implementation plan before it enters the pipeline.
+Every asset is licensed and obtained separately, and gets a row in the licence
+register before it enters the pipeline. The shipped model was built from these
+and nothing else:
 
-| Asset | Source | Redistributable |
+| Asset | Source | Trained models redistributable |
 |---|---|---|
-| FLAME 2020 / 2023 | flame.is.tue.mpg.de | No |
-| FLAME 2023 Open | same | Yes (CC-BY-4.0) |
-| NoW benchmark | now.is.tue.mpg.de | No |
-| DECA weights | DECA repo | **No** |
-| FFHQ (permissive subset) | NVlabs | Yes (CC BY / PD / CC0) |
-| DigiFace-1M | Microsoft | Data no; trained models yes (R-UDA) |
-| Arc2Face | HuggingFace | CC BY-NC-SA 4.0, ShareAlike |
-| CelebA | MMLAB CUHK, via `flwrlabs/celeba` | **No** — non-commercial, no redistribution |
+| FLAME 2023 Open | flame.is.tue.mpg.de | yes, with attribution (CC-BY-4.0) |
+| DigiFace-1M | Microsoft | yes, explicitly (R-UDA v1.0) |
+| FFHQ (permissive subset) | NVlabs | yes (CC BY / PD / CC0) |
+| MediaPipe landmarker / segmenter | Google | yes (Apache-2.0) |
+| NoW benchmark | now.is.tue.mpg.de | evaluation only |
 
-**This project is non-commercial.** Arc2Face and CelebA both derive from scraped
-source images; the project's no-scraping rule is traded knowingly in both cases
-and recorded here rather than glossed. CelebA additionally forbids
-redistribution outright and gates its identity annotations behind a request the
-public mirror skips, so only the recipe is tracked, never the data.
+That list is short on purpose. A clean basis plus a corpus that explicitly
+permits redistributing trained models is what makes the exported meshes
+shareable. No DECA-derived weights are used anywhere — where the code says "DECA
+weights" it means their published *loss weights*, read from their config.
+
+Earlier experiments in this project did use other corpora, including scraped-
+provenance ones. Those runs are retired and ship nothing;
+[FINDINGS.md](FINDINGS.md) records what they measured and
+[MODEL_CARD.md](MODEL_CARD.md) why they were dropped.
+
+**This project is non-commercial.** Face images are biometric data under GDPR
+and BIPA: no scraping, consent on file for every demo photograph, and uploads
+are never retained. Note that since the texture became a projection, an exported
+GLB contains the photograph itself wrapped onto a mesh — sharing the file is
+sharing the photograph.
 
 CI runs against a synthetic model generated from an icosphere
-(`tests/fixtures/make_fixture.py`) that shares FLAME's pickle structure and contains no
-MPI data, so the full pipeline — LBS, joints, blendshapes, rasterisation,
-gradients — is exercised without any licensed asset. Suites whose thresholds are
-stated in millimetres against a real head skip themselves.
-
----
+(`tests/fixtures/make_fixture.py`) that shares FLAME's pickle structure and
+contains no MPI data, so the full pipeline — LBS, joints, blendshapes,
+rasterisation, gradients — is exercised without any licensed asset. Suites whose
+thresholds are stated in millimetres against a real head skip themselves.
 
 ## How this was built
 
