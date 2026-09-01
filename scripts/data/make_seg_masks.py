@@ -34,6 +34,13 @@ def main():
     ap.add_argument("--corpus", default="ffhq")
     ap.add_argument("--limit", type=int, default=0, help="0 = every crop")
     ap.add_argument("--res", type=int, default=RES)
+    ap.add_argument("--shard", type=int, default=0)
+    ap.add_argument("--of", type=int, default=1,
+                    help="split the corpus across N processes. MediaPipe is "
+                         "CPU-bound and single-threaded, so this is near-linear "
+                         "on a many-core box. Merge with --merge.")
+    ap.add_argument("--merge", action="store_true",
+                    help="combine skin_<res>.shard*.npz into skin_<res>.npz")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
 
@@ -41,10 +48,31 @@ def main():
     if not crops.exists():
         print(f"SKIP - no crops under {crops}")
         return
+    out = pathlib.Path(a.out or (ROOT / "data" / a.corpus / f"skin_{a.res}.npz"))
+
+    if a.merge:
+        parts = sorted(out.parent.glob(f"{out.stem}.shard*.npz"))
+        if not parts:
+            print(f"no shards matching {out.stem}.shard*.npz")
+            return
+        keys, masks = [], []
+        for q in parts:
+            with np.load(q) as d:
+                keys.append(d["keys"]); masks.append(d["masks"])
+        keys = np.concatenate(keys); masks = np.concatenate(masks)
+        np.savez_compressed(out, keys=keys, masks=masks, res=a.res)
+        print(f"merged {len(parts)} shards -> {out}  ({len(keys)} masks, "
+              f"{out.stat().st_size/1e6:.1f} MB)")
+        for q in parts:
+            q.unlink()
+        return
+
     files = sorted(crops.rglob("*.jpg")) + sorted(crops.rglob("*.png"))
     if a.limit:
         files = files[:a.limit]
-    out = pathlib.Path(a.out or (ROOT / "data" / a.corpus / f"skin_{a.res}.npz"))
+    if a.of > 1:
+        files = files[a.shard::a.of]
+        out = out.with_name(f"{out.stem}.shard{a.shard}.npz")
 
     seg = Segmenter()
     keys, packed = [], []
