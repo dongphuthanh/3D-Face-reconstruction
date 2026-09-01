@@ -67,9 +67,12 @@ def extension():
 
         from torch.utils.cpp_extension import CUDA_HOME, load
         if CUDA_HOME is None:
-            _reason = ("no CUDA toolkit (torch.utils.cpp_extension.CUDA_HOME is "
-                       "None) -- nvcc is needed to build the extension, and it "
-                       "must match the CUDA torch was built against")
+            import torch as _t
+            _reason = (f"no CUDA toolkit: CUDA_HOME is None. torch was built "
+                       f"against CUDA {_t.version.cuda}, so install a matching "
+                       f"toolkit (winget install --id Nvidia.CUDA --version "
+                       f"{_t.version.cuda}) -- and on Windows an MSVC toolset "
+                       f"that version accepts")
             return None
 
         # Build for the device actually present. Compiling for the wrong
@@ -79,10 +82,20 @@ def extension():
         arch = f"{major}.{minor}"
         os.environ.setdefault("TORCH_CUDA_ARCH_LIST", arch)
 
+        flags = ["-O3", f"-arch=sm_{major}{minor}"]
+        if os.name == "nt":
+            # nvcc refuses host compilers newer than the ones it shipped
+            # knowing about, and this machine has only MSVC 14.51 (VS 18) while
+            # CUDA 12.8 expects 14.4x. Without this it stops at "unsupported
+            # Microsoft Visual Studio version" before compiling anything. It is
+            # a real override, not a formality: if PyTorch's headers then fail
+            # to compile, install an older toolset rather than fighting it.
+            flags.append("-allow-unsupported-compiler")
+
         _ext = load(
             name="face3d_raster",
             sources=[str(src)],
-            extra_cuda_cflags=["-O3", f"-arch=sm_{major}{minor}"],
+            extra_cuda_cflags=flags,
             extra_include_paths=[str(_CU)],
             verbose=False,
         )
