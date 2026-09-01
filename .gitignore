@@ -108,5 +108,6 @@ cuda/_build_env.bat
 cuda/_profile_env.bat
 cuda/*.ncu-rep
 
-# Personal career notes, not part of the published repo
+# Personal notes, not part of the published repo
 RESUME_BRIEF.md
+ARCHITECTURE.md

@@ -71,10 +71,8 @@ prediction scores **worse than a constant mesh**; keeping only 40% of the
 predicted shape deviation is what makes the model beat the mean face. The
 encoder is over-confident, and that constant is the measurement that says so.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for what every module does and the
-decisions behind them, [MODEL_CARD.md](MODEL_CARD.md) for the shipped checkpoint
-and its limits, and [FINDINGS.md](FINDINGS.md) for how each gain was won or
-lost.
+See [MODEL_CARD.md](MODEL_CARD.md) for the shipped checkpoint and its limits,
+[FINDINGS.md](FINDINGS.md) for how each gain was won or lost.
 
 ## Engineering highlights
 
