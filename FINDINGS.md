@@ -62,6 +62,44 @@ available to explain them. The segmenter that would fix it already exists
 (`face3d/texture/segment.py`) and is used only for the inference-time texture
 projection.
 
+**Gating the photometric loss on segmented skin changed nothing measurable.**
+The photometric mask is the rendered mesh silhouette restricted to face-skin
+triangles, which is mesh-side: it selects which triangles to compare, not which
+photograph pixels are skin. Measured, that leaks 16.6% of loss pixels on FFHQ
+and 21.6% on DigiFace to hair, clothes and background
+(`scripts/eval/diag_photometric_mask.py`), so roughly a fifth of the
+photometric signal was the encoder being asked to explain non-skin with a skin
+albedo model, with geometry as the free variable available to do it.
+
+Two matched FFHQ runs, 2 epochs, identical but for the mask:
+
+| alpha | mask off | mask on | delta |
+|---|---|---|---|
+| 0.25 | 1.3244 | 1.3437 | +0.0194 |
+| **0.40** | **1.3240** | **1.3405** | +0.0164 |
+| 0.60 | 1.3605 | 1.3554 | -0.0051 |
+
+No effect. Every delta sits inside the ~0.028 mm this setup can resolve, and
+**the sign flips at alpha 0.60** -- a difference that changes direction across
+the sweep is noise, not signal. Both arms peak at alpha 0.40 and both beat the
+mean face (1.3693), so the pilots did learn; the mask did not change what.
+
+The training loss is not the place to look for the answer here, and it is worth
+saying why: the two arms compute the photometric term over DIFFERENT masks, so
+the treatment's 13% lower photometric loss is arithmetic, not improvement. It
+excluded exactly the pixels that are hardest to explain. Only an external metric
+can settle it, which is what the sweep is for.
+
+What this pilot cannot rule out. It is FFHQ-only with no identity loss and no
+shape swap, so it tests the photometric term in isolation rather than the
+shipped configuration. The leak is larger on DigiFace (21.6%), which is where
+the shape swap lives and therefore the mechanism most likely to convert cleaner
+photometric signal into better identity shape. And NoW scores a NEUTRAL mesh, so
+it is an identity-shape metric -- if the mask mainly cleans up expression or
+albedo, the metric is blind to it by construction. The feature is kept behind
+`--photo-mask`, off by default, with the leak measurement as the reason it might
+still be worth revisiting on an identity-grouped corpus.
+
 **A better identity signal is not the same as a better 3D shape.** MICA
 replaces the pixel-derived shape head with an ArcFace identity embedding and
 beats DECA while training on ~2,300 subjects. Probed on NoW first, the premise
