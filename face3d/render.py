@@ -49,12 +49,34 @@ def _bary(tri, px, py):
 def _assign_faces(verts_px, depth, faces, H, W, K, budget=2_000_000):
     """Z-buffer. Returns (B,H,W) long face ids, -1 where nothing was hit.
 
+    Uses the CUDA kernel in cuda/ when one can be built, falling back to the
+    PyTorch path below otherwise. Measured at the training configuration (batch
+    8, 224px): 15.3 ms here against 0.26 ms there. See face3d/raster_cuda.py;
+    FACE3D_NO_CUDA_RASTER=1 forces this path.
+
+    The two are not quite identical, and the CUDA one is MORE correct. K exists
+    only to size the candidate tensor below, and it drops triangles in three
+    ways a bounding-box kernel does not: span > K falls in no bucket, span == 0
+    fails the `span > 0` test, and K < 16 breaks the bucket loop before the K
+    bucket is reached. None fires on FLAME geometry -- p99 span is 15.8 px
+    against K = 23 -- but they are why a diff between the two paths on synthetic
+    input is not automatically a bug in the kernel.
+
     Depth and face index are packed into one int64 key so a single amin-scatter
     resolves both the winner and the tie-break, instead of two passes. Faces are
     processed in chunks because the candidate tensor is (B, F, K*K, 3) and K
     grows with how large the mesh is drawn; amin-scatter composes across chunks,
     so this changes memory use and nothing else.
     """
+    if verts_px.is_cuda:
+        from . import raster_cuda
+        ext = raster_cuda.extension()
+        if ext is not None:
+            return ext.assign_faces(verts_px.contiguous().float(),
+                                    depth.contiguous().float(),
+                                    faces.contiguous().int(),
+                                    int(H), int(W)).long()
+
     B, Fn = verts_px.shape[0], faces.shape[0]
     dev = verts_px.device
     # Global depth range, so keys stay comparable between chunks.
