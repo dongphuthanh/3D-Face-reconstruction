@@ -8,6 +8,9 @@
 #   python scripts/dump_raster_fixture.py
 #
 # Exit code is 0 only if every case matches the PyTorch reference EXACTLY.
+#
+# KEEP THIS FILE LF-ONLY. Rewriting it from a Windows editor can introduce CRLF,
+# and bash then reports `$'\r': command not found` on every line.
 
 set -u
 cd "$(dirname "$0")"
@@ -30,26 +33,30 @@ if ! nvcc -O3 -arch=sm_120 -o raster raster.cu 2>build.log; then
 fi
 
 pass=0; fail=0; failed=""
-printf '\n%-12s %10s  %s\n' CASE TIME RESULT
-printf -- '---------------------------------------------------------------\n'
+printf '\n%-12s %8s %8s   %s\n' CASE KERNEL TOTAL RESULT
+printf -- '----------------------------------------------------------------\n'
 for dir in "$FIX"/*/; do
     name=$(basename "$dir")
     [ -f "$dir/meta.json" ] || continue
     out=$(./raster "$dir" 2>&1)
-    ms=$(echo "$out" | grep -oE '[0-9.]+ ms / call' | head -1 | cut -d' ' -f1)
+    # Read the per-phase table. `kern` is the rasteriser alone; `ms` is the whole
+    # pipeline including keys, sort, fill and unpack. Optimising the first at the
+    # expense of the second looks like a win and is not one, so both are shown.
+    ms=$(echo "$out"   | awk '$1=="TOTAL"        {print $2}')
+    kern=$(echo "$out" | awk '$1=="assign_faces" {print $2}')
     if echo "$out" | grep -q "EXACT MATCH"; then
-        printf '%-12s %8s ms  PASS\n' "$name" "${ms:-?}"
+        printf '%-12s %8s %8s   PASS\n' "$name" "${kern:-?}" "${ms:-?}"
         pass=$((pass+1))
     else
         detail=$(echo "$out" | grep -E "^mismatched" | head -1)
-        printf '%-12s %8s ms  FAIL   %s\n' "$name" "${ms:-?}" "$detail"
+        printf '%-12s %8s %8s   FAIL  %s\n' "$name" "${kern:-?}" "${ms:-?}" "$detail"
         fail=$((fail+1)); failed="$failed $name"
     fi
 done
 
-printf -- '---------------------------------------------------------------\n'
+printf -- '----------------------------------------------------------------\n'
 if [ "$fail" -eq 0 ] && [ "$pass" -gt 0 ]; then
-    echo "$pass/$pass PASS"
+    echo "$pass/$pass PASS      (times in ms)"
     exit 0
 fi
 echo "$pass passed, $fail FAILED:$failed"

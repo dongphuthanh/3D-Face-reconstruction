@@ -38,7 +38,9 @@
 #include <cstring>
 #include <vector>
 #include <cuda_runtime.h>
+#include <cub/cub.cuh>
 
+#define TILE_DIM 16;
 #define CHECK(x) do { cudaError_t e = (x); if (e != cudaSuccess) { \
     fprintf(stderr, "%s:%d %s\n", __FILE__, __LINE__, cudaGetErrorString(e)); \
     exit(1); } } while (0)
@@ -67,16 +69,44 @@ __device__ __forceinline__ unsigned long long pack(float z, int fid,
     return (unsigned long long)(q * (long long)nfaces + fid);
 }
 
+__global__ void keys(const float *__restrict__ verts_px,
+                     const int   *__restrict__ faces,
+                     unsigned *__restrict__ key, int *__restrict__ val,
+                     int B, int V, int F, int H, int W) {
+    long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    if (i >= (long long)B * F) return;
+    int b = (int)(i / F), f = (int)(i % F);
+    int vert0 = faces[f * 3], vert1 = faces[f * 3 + 1], vert2 = faces[f * 3 + 2];
+    float x0= verts_px[(b * V + vert0) * 2], y0 = verts_px[(b * V + vert0) * 2 + 1];
+    float x1= verts_px[(b * V + vert1) * 2], y1 = verts_px[(b * V + vert1) * 2 + 1];
+    float x2= verts_px[(b * V + vert2) * 2], y2 = verts_px[(b * V + vert2) * 2 + 1];
+    // identical vertex fetch + clipped bbox to assign_faces
+    
+    int xlo  = max(0,   (int)floorf(fminf(fminf(x0, x1), x2)));
+    int xhi  = min(W-1, (int)floorf(fmaxf(fmaxf(x0, x1), x2)));
+
+    int ylo  = max(0,   (int)floorf(fminf(fminf(y0, y1), y2)));
+    int yhi  = min(H-1, (int)floorf(fmaxf(fmaxf(y0, y1), y2)));
+
+    int bw = xhi - xlo + 1, bh = yhi - ylo + 1;
+    key[i] = (bw > 0 && bh > 0) ? (unsigned)(bw * bh) : 0u;   // how much work
+    val[i] = (int)i;                                          // which triangle
+}
+
+
 __global__ void assign_faces(const float *__restrict__ verts_px,  // (B,V,2)
                              const float *__restrict__ depth,     // (B,V)
                              const int *__restrict__ faces,       // (F,3)
                              unsigned long long *__restrict__ buf,// (B,H,W)
                              int B, int V, int F, int H, int W,
-                             float zmin, float scale) {
-    long long tid = blockIdx.x * (long long)blockDim.x + threadIdx.x;
-    if (tid >= (long long)B * F) return;
+                             float zmin, float scale,
+                            const int *__restrict__ order) {
+    long long slot = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    if (slot >= (long long)B * F) return;
+    long long tid = order[slot];
     int b = (int)(tid / F);
     int f = (int)(tid % F);
+    //int num_tiles_x = (W + TILE_DIM - 1) / TILE_DIM;
 
     // ------------------------------------------------------------------
     // YOUR KERNEL GOES HERE.
@@ -105,6 +135,8 @@ __global__ void assign_faces(const float *__restrict__ verts_px,  // (B,V,2)
     float x1= verts_px[(b * V + vert1) * 2], y1 = verts_px[(b * V + vert1) * 2 + 1], d1 = depth[b * V + vert1];
     float x2= verts_px[(b * V + vert2) * 2], y2 = verts_px[(b * V + vert2) * 2 + 1], d2 = depth[b * V + vert2];
     float d = ((y1 - y2) * (x0 - x2)) + ((x2 - x1) * (y0 - y2));
+    if (fabsf(d) < 1e-12f) d = 1e-12f;
+    float _d = 1.0f / d;
 
     int xlo  = max(0,   (int)floorf(fminf(fminf(x0, x1), x2)));
     int xhi  = min(W-1, (int)floorf(fmaxf(fmaxf(x0, x1), x2)));
@@ -116,8 +148,8 @@ __global__ void assign_faces(const float *__restrict__ verts_px,  // (B,V,2)
         float py = y + 0.5;
         for (int x = xlo; x <= xhi; x++) {
             float px = x + 0.5;
-            float w0 = ((y1-y2)*(px-x2) + (x2-x1)*(py-y2)) / d;
-            float w1 = ((y2-y0)*(px-x2) + (x0-x2)*(py-y2)) / d;
+            float w0 = ((y1-y2)*(px-x2) + (x2-x1)*(py-y2)) * _d;
+            float w1 = ((y2-y0)*(px-x2) + (x0-x2)*(py-y2)) * _d;
             float w2 = 1 - w0 - w1;
             if (w0 < 0 || w1 < 0 || w2 < 0) {
                 continue;
@@ -128,6 +160,16 @@ __global__ void assign_faces(const float *__restrict__ verts_px,  // (B,V,2)
     }
 
 
+}
+
+// Fill on the DEVICE. cudaMemset cannot do this -- it writes a BYTE pattern and
+// BIG is not byte-uniform -- so the first version of this harness allocated a
+// host vector and copied it over on every call, INSIDE the timing loop. That is
+// a 3.2 MB host allocation plus a PCIe transfer per iteration, and it dwarfed
+// the kernel being measured.
+__global__ void fill(unsigned long long *buf, long long n, unsigned long long v) {
+    long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    if (i < n) buf[i] = v;
 }
 
 __global__ void unpack(const unsigned long long *buf, int *fid, long long n,
@@ -166,8 +208,11 @@ int main(int argc, char **argv) {
     float scale = (float)(1 << 30) / (zmax - zmin + 1e-12f);
     unsigned long long BIG = (unsigned long long)((1LL << 30) * (long long)F + F);
 
-    float *d_px, *d_z; int *d_f, *d_fid; unsigned long long *d_buf;
+    float *d_px, *d_z; int *d_f, *d_fid; unsigned long long *d_buf; unsigned *key, *key_out; int *val;
     long long npix = (long long)B * H * W;
+    CHECK(cudaMalloc(&key, B * F * sizeof(unsigned)));
+    CHECK(cudaMalloc(&key_out, B * F * sizeof(unsigned)));
+    CHECK(cudaMalloc(&val, B * F * sizeof(int)));
     CHECK(cudaMalloc(&d_px, h_px.size() * 4));
     CHECK(cudaMalloc(&d_z,  h_z.size() * 4));
     CHECK(cudaMalloc(&d_f,  h_f.size() * 4));
@@ -177,14 +222,46 @@ int main(int argc, char **argv) {
     CHECK(cudaMemcpy(d_z,  h_z.data(),  h_z.size() * 4,  cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(d_f,  h_f.data(),  h_f.size() * 4,  cudaMemcpyHostToDevice));
 
-    auto run = [&]() {
-        std::vector<unsigned long long> init(npix, BIG);
-        CHECK(cudaMemcpy(d_buf, init.data(), npix * 8, cudaMemcpyHostToDevice));
-        long long threads = (long long)B * F;
-        assign_faces<<<(threads + 255) / 256, 256>>>(d_px, d_z, d_f, d_buf,
-                                                     B, V, F, H, W, zmin, scale);
-        unpack<<<(npix + 255) / 256, 256>>>(d_buf, d_fid, npix, BIG, F);
+    int *d_order;
+    CHECK(cudaMalloc(&d_order, (size_t)B * F * sizeof(int)));
+    std::vector<int> h_order(B * F);
+    for (int i = 0; i < B * F; i++) h_order[i] = i;
+    CHECK(cudaMemcpy(d_order, h_order.data(), h_order.size() * 4, cudaMemcpyHostToDevice));
+    // One lambda per phase, so each can be timed on its own. When you add the
+    // keys kernel and the sort, give them lambdas here too and put them in
+    // `run` -- and in the timing below. A sort you do not measure is a sort
+    // you cannot tell is worth it.
+    // A bbox area can never exceed H*W, so that many bits always suffice.
+    // Radix sort costs one pass per 4-8 bits, so telling CUB the real range
+    // instead of the default 32 removes half the passes. Deriving it beats
+    // hard-coding: too few bits sorts only the low ones and silently gives a
+    // partial order -- harmless for correctness, since min is commutative,
+    // but it quietly wastes the whole point of sorting.
+    int end_bit = 0;
+    while ((1u << end_bit) <= (unsigned)(H * W) && end_bit < 32) end_bit++;
+    printf("radix bits: %d (H*W = %d)\n", end_bit, H * W);
+
+    void  *d_temp = nullptr;
+    size_t temp_bytes = 0;
+    cub::DeviceRadixSort::SortPairs(d_temp, temp_bytes,
+                                key, key_out,     // keys  in -> out
+                                val, d_order,       // values in -> out
+                                (int)(B * F), 0, end_bit);
+    CHECK(cudaMalloc(&d_temp, temp_bytes));
+    long long nthreads = (long long)B * F;
+    auto do_keys = [&]() { keys<<<(int) ((nthreads + 255) / 256),256>>>(d_px, d_f, key, val, B, V, F, H, W);};
+    auto do_sort = [&]() {
+        size_t bytes = temp_bytes;                        // CUB may modify it; pass a copy
+        cub::DeviceRadixSort::SortPairs(d_temp, bytes, key, key_out,
+                                        val, d_order, (int)(B * F), 0, end_bit);
     };
+    auto do_fill   = [&]() { fill<<<(int)((npix + 255) / 256), 256>>>(d_buf, npix, BIG); };
+    auto do_assign = [&]() { assign_faces<<<(int)((nthreads + 255) / 256), 256>>>(
+                                 d_px, d_z, d_f, d_buf, B, V, F, H, W, zmin, scale,
+                                 d_order); };
+    auto do_unpack = [&]() { unpack<<<(int)((npix + 255) / 256), 256>>>(
+                                 d_buf, d_fid, npix, BIG, F); };
+    auto run = [&]() { do_keys(), do_sort(), do_fill(); do_assign(); do_unpack(); };
 
     run();
     CHECK(cudaDeviceSynchronize());
@@ -214,12 +291,30 @@ int main(int argc, char **argv) {
     printf(wrong == 0 ? "EXACT MATCH\n" : "NOT MATCHING YET\n");
 
     cudaEvent_t a, b2; cudaEventCreate(&a); cudaEventCreate(&b2);
-    for (int i = 0; i < 3; i++) run();
-    CHECK(cudaDeviceSynchronize());
-    cudaEventRecord(a);
-    for (int i = 0; i < 20; i++) run();
-    cudaEventRecord(b2); CHECK(cudaEventSynchronize(b2));
-    float ms; cudaEventElapsedTime(&ms, a, b2);
-    printf("%.3f ms / call   (PyTorch _assign_faces on this data: 15.3 ms)\n", ms / 20);
+    auto bench = [&](const char *label, auto &&fn) {
+        for (int i = 0; i < 5; i++) fn();
+        CHECK(cudaDeviceSynchronize());
+        cudaEventRecord(a);
+        for (int i = 0; i < 50; i++) fn();
+        cudaEventRecord(b2); CHECK(cudaEventSynchronize(b2));
+        float ms; cudaEventElapsedTime(&ms, a, b2);
+        printf("  %-16s %7.3f ms\n", label, ms / 50);
+        return ms / 50;
+    };
+    printf("\n");
+    // assign_faces is timed as (fill + assign) minus fill, because it needs a
+    // freshly initialised buffer to do representative work: run it twice over
+    // an already-populated buffer and most of its atomics lose immediately.
+    float t_keys   = bench("keys", do_keys);
+    float t_sort   = bench("sort", do_sort);
+    float t_fill   = bench("fill", do_fill);
+    float t_assign = bench("assign_faces", [&]{ do_fill(); do_assign(); }) - t_fill;
+    float t_unpack = bench("unpack", do_unpack);
+    float total    = t_keys + t_sort + t_fill + t_assign + t_unpack;
+    printf("  %-16s %7.3f ms   assign_faces is %.0f%% of it\n",
+           "TOTAL", total, 100.0 * t_assign / total);
+    printf("  PyTorch _assign_faces on `basic`: 15.3 ms  ->  %.0fx\n",
+           15.3 / total);
+
     return 0;
 }
