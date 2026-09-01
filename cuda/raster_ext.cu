@@ -14,6 +14,8 @@
 
 #include <torch/extension.h>
 #include <cuda_runtime.h>
+#include <ATen/cuda/CUDAContext.h>    // at::cuda::getCurrentCUDAStream
+#include <c10/cuda/CUDAException.h>   // C10_CUDA_KERNEL_LAUNCH_CHECK
 
 #include "raster_kernel.cuh"
 

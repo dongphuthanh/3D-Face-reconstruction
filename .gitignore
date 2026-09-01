@@ -102,3 +102,6 @@ runs/texgen*/
 cuda/raster
 cuda/*.o
 cuda/*.exe
+
+# Local build helper, machine-specific paths
+cuda/_build_env.bat
