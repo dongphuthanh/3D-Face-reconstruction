@@ -46,9 +46,21 @@ entirely. Adopting their configuration (plus K=4 images per identity):
 
 The ratio jump (0.76 -> 0.96) is the largest of the project -- larger than 55x
 more data (0.68 -> 0.76) or swapping in an ArcFace shape head (0.76 -> 0.85).
-It cost nothing but reading their config. Still missing from their setup: the
-identity loss (0.2, face recognition on the render), eye-closure and
-lip-distance terms, real segmentation masks, and randomised crop scale.
+It cost nothing but reading their config. Still missing from their setup at
+that point: the identity loss (0.2, face recognition on the render),
+eye-closure and lip-distance terms, real segmentation masks, and randomised
+crop scale.
+
+Four of those five have since been adopted -- the shipped run passes
+`--w-id 0.2 --w-eye 1.0 --w-lip 0.5` and `scale_jitter` is applied per
+batch. **Real face-parsing masks are the one that remains.** The photometric
+mask is still the rendered mesh silhouette restricted to face-skin triangles,
+which is mesh-side: it says which triangles to compare, not which PHOTOGRAPH
+pixels are actually skin. Glasses, a fringe or a hand falling inside the
+projected face still enter the loss, and geometry is the free variable
+available to explain them. The segmenter that would fix it already exists
+(`face3d/texture/segment.py`) and is used only for the inference-time texture
+projection.
 
 **A better identity signal is not the same as a better 3D shape.** MICA
 replaces the pixel-derived shape head with an ArcFace identity embedding and
