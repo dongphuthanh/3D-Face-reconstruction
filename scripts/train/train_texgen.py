@@ -25,6 +25,7 @@ import torch.nn.functional as F
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from face3d.render.albedo import CACHE_DIR, FlameTexture
 from face3d.texture.regions import crease_map, region_masks
+from face3d.learn.augment import photometric_jitter
 from face3d.texture.skin import compose, freckle_noise, region_means, split
 from face3d.texture.texgen import (TextureAutoencoder, TextureGenerator,
                            diffuse_fill, masked_loss)
@@ -245,6 +246,11 @@ def run(a):
         t0, tot, seen = time.time(), 0.0, 0
         for batch in train_dl:
             photo, target, w, pca = prepare(batch, tex, eye_off, DEV)
+            if a.jitter:
+                photo = photometric_jitter(
+                    photo, brightness=0.25 * a.jitter, contrast=0.25 * a.jitter,
+                    gamma=(1 - 0.2 * a.jitter, 1 + 0.25 * a.jitter),
+                    noise=0.02 * a.jitter)
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
                 loss, l1, g = step(model, a, photo, target, w, pca,
                                    masks, noise, crease, colour_keys)
@@ -294,6 +300,15 @@ if __name__ == "__main__":
     ap.add_argument("--aux-weight", type=float, default=0.5,
                     help="pull on the named colour parameters toward the mean "
                          "colour of the region they are named after")
+    ap.add_argument("--jitter", type=float, default=0.0,
+                    help="photometric augmentation on the INPUT photograph, as "
+                         "a fraction of the default strength. The target is a "
+                         "DE-LIT albedo, so it does not change when the photo's "
+                         "exposure or white balance does -- that invariance is "
+                         "exactly what this teaches, and it is the standard "
+                         "answer to a train/val gap (42%% on gen7). Colour "
+                         "space only: geometry is untouched, so the UV target "
+                         "stays aligned. Training only, never validation.")
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--init", default="")
     ap.add_argument("--out", default="")
