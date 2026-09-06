@@ -247,10 +247,19 @@ def run(a):
         for batch in train_dl:
             photo, target, w, pca = prepare(batch, tex, eye_off, DEV)
             if a.jitter:
-                photo = photometric_jitter(
+                # Per SAMPLE, not per batch, and only a fraction of them.
+                # Jittering every image at full strength shifts the model onto
+                # jittered statistics and it never sees a clean photograph:
+                # measured, that put validation ABOVE training (0.0919 against
+                # 0.0827 at epoch 6) and ran 2x worse than no augmentation at
+                # all. Clean inputs have to stay in the training distribution.
+                j = photometric_jitter(
                     photo, brightness=0.25 * a.jitter, contrast=0.25 * a.jitter,
                     gamma=(1 - 0.2 * a.jitter, 1 + 0.25 * a.jitter),
                     noise=0.02 * a.jitter)
+                take = (torch.rand(photo.shape[0], 1, 1, 1, device=photo.device)
+                        < a.jitter_p).float()
+                photo = j * take + photo * (1 - take)
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
                 loss, l1, g = step(model, a, photo, target, w, pca,
                                    masks, noise, crease, colour_keys)
@@ -309,6 +318,10 @@ if __name__ == "__main__":
                          "answer to a train/val gap (42%% on gen7). Colour "
                          "space only: geometry is untouched, so the UV target "
                          "stays aligned. Training only, never validation.")
+    ap.add_argument("--jitter-p", type=float, default=0.5,
+                    help="fraction of samples that get jittered. 1.0 means the "
+                         "model never sees a clean photograph, which is how "
+                         "the first attempt failed.")
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--init", default="")
     ap.add_argument("--out", default="")

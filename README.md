@@ -64,8 +64,11 @@ the face region:
 | **this project** | **0.0564** — 63% closer |
 
 Measured on 904 held-out faces. For scale, an autoencoder allowed to *see* the
-target reaches 0.0383, so this covers about **84%** of what is achievable with
-this representation.
+target reaches **~0.039**, so this covers about **84%** of what is achievable
+with this representation. Two autoencoders trained independently on corpora
+3× apart land at 0.0386 and 0.0398 and are statistically indistinguishable on
+faces neither saw, so that ceiling is a property of the representation rather
+than of how much data was thrown at it.
 
 One number is load-bearing enough to name: `SHAPE_CALIBRATION = 0.40`. The raw
 prediction scores **worse than a constant mesh**; keeping only 40% of the

@@ -104,6 +104,54 @@ can do, up from 82%. That ceiling is itself understated: `texgen_ae2` was
 trained on the old corpus, so retraining it on 18,082 would likely lower it and
 reopen some headroom.
 
+**Photometric augmentation hurts, and the pipeline says why.** After the corpus
+tripling, the generator still trained 42% below validation, and the trainer had
+no augmentation at all. The obvious lever looked well motivated: the target is a
+de-lit albedo, so brightness and white balance jitter on the input should teach
+an invariance the data already has.
+
+It does not have it. `delight()` is explicit -- "lighting GRADIENT across the
+face is removed; the overall level and colour are KEPT, which means the baked
+texture keeps the average skin tone the photograph actually shows". That is a
+deliberate decision, made because dividing by the raw shading produced "pastel,
+blotchy faces with the subject's actual tone missing". So the target carries the
+photograph's exposure BY DESIGN, and brightness jitter asks the model to predict
+the same albedo from a brighter photo while the corpus says a brighter photo
+means a brighter albedo. The model has to average over the contradiction.
+
+| | best val | masked L1, 904 held out |
+|---|---|---|
+| gen7, no augmentation | **0.02945** | **0.05644** |
+| gen8, jitter 0.5 on half the samples | 0.03742 | 0.06037 |
+
+Worse than gen7, and worse than gen6 on the SMALL corpus (0.05899). A first
+attempt at full strength on every sample was worse still and failed in a
+diagnostic way: validation sat ABOVE training (0.0919 against 0.0827 at epoch
+6), because the model never saw a clean photograph and had tuned itself onto
+jittered statistics. Making it per-sample and probabilistic fixed that ordering
+and the run still lost.
+
+The general lesson is worth more than the result: an augmentation encodes a
+claim about which transformations leave the label unchanged, and that claim has
+to be checked against how the labels were actually MADE, not against intuition.
+
+**More data does not lower the ceiling.** The autoencoder that defines what this
+representation can achieve was retrained on the 3x corpus to check whether the
+ceiling had moved:
+
+```
+all 904 faces   ae2 (5,738)  0.03861   ae3 (18,082)  0.03984   z = -2.4
+clean 609       ae2          0.03876   ae3           0.03983   z = -0.9
+```
+
+On the split as a whole ae2 looks significantly better, but ~295 of those faces
+are ae2's own training data. Restricted to the 609 neither model trained on the
+gap shrinks and loses significance -- 48.1% of faces, a coin flip. So the two
+estimates agree, the ceiling is ~0.039, and it is a property of the
+REPRESENTATION rather than of the amount of data. The generator at 0.0564
+covers ~84% of it, and closing the rest needs a richer basis, not another
+corpus.
+
 **Gating the photometric loss on segmented skin changed nothing measurable.**
 The photometric mask is the rendered mesh silhouette restricted to face-skin
 triangles, which is mesh-side: it selects which triangles to compare, not which

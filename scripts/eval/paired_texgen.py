@@ -26,15 +26,19 @@ from face3d.texture.project import load_static
 from face3d.texture.regions import crease_map, region_masks
 from face3d.texture.skin import compose as skin_compose
 from face3d.texture.skin import freckle_noise, split as skin_split
-from face3d.texture.texgen import TextureGenerator
+from face3d.texture.texgen import (TextureAutoencoder, TextureGenerator,
+                                   diffuse_fill)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def load(path):
+def load(path, stage):
     ck = torch.load(path, map_location=DEV)
-    m = TextureGenerator(ck["latent"], 256, ck["width"], pretrained=False).to(DEV)
+    if stage == "ae":
+        m = TextureAutoencoder(ck["latent"], 256, ck["width"]).to(DEV)
+    else:
+        m = TextureGenerator(ck["latent"], 256, ck["width"], pretrained=False).to(DEV)
     m.load_state_dict(ck["model"], strict=False)
     m.eval()
     return m, ck
@@ -45,6 +49,10 @@ def main():
     ap.add_argument("--a", required=True)
     ap.add_argument("--b", required=True)
     ap.add_argument("--cache", default=str(ROOT / "data" / "texgen_cache"))
+    ap.add_argument("--stage", choices=("gen", "ae"), default="gen",
+                    help="ae compares two autoencoders, i.e. two estimates of "
+                         "the CEILING. They read the target, so they need the "
+                         "same diffuse-filled construction training used.")
     ap.add_argument("--a-trained-below", type=int, default=0,
                     help="A trained on corpus indices < N, so val faces below "
                          "it flatter A. Shards sort old-first (shard_000.. "
@@ -59,8 +67,8 @@ def main():
     perm = np.random.default_rng(0).permutation(n)
     val = perm[:max(64, int(0.05 * n))]
 
-    ma, cka = load(args.a)
-    mb, ckb = load(args.b)
+    ma, cka = load(args.a, args.stage)
+    mb, ckb = load(args.b, args.stage)
     print(f"A {args.a}  epoch {cka['epoch']}  val {cka['val']:.5f}")
     print(f"B {args.b}  epoch {ckb['epoch']}  val {ckb['val']:.5f}")
 
@@ -78,10 +86,13 @@ def main():
     noise = torch.as_tensor(freckle_noise(256), device=DEV)
     crease = torch.as_tensor(crease_map(cache, st, 256), device=DEV)
 
-    def score(model, crop, pca, alb, w):
-        res, raw = model(crop)
-        gen = skin_compose((pca + res).clamp(0, 1), skin_split(raw),
-                           masks, noise, crease)
+    def score(model, crop, pca, alb, w, tgt):
+        if args.stage == "ae":
+            gen = (pca + model(tgt, w)).clamp(0, 1)
+        else:
+            res, raw = model(crop)
+            gen = skin_compose((pca + res).clamp(0, 1), skin_split(raw),
+                               masks, noise, crease)
         # Per FACE, not pooled: sum over texels and channels, divide by that
         # face's own weight, so a large face cannot dominate a small one.
         num = ((gen - alb).abs() * w).sum(dim=(1, 2, 3))
@@ -99,8 +110,10 @@ def main():
         w = w * eye_off
         with torch.no_grad():
             pca = tex.texture(coef, eye=eye).clamp(0, 1)
-            ea.append(score(ma, crop, pca, alb, w))
-            eb.append(score(mb, crop, pca, alb, w))
+            rr = (alb - pca) * (w > 0)
+            tgt = rr * w + diffuse_fill(rr, w) * (1 - w)
+            ea.append(score(ma, crop, pca, alb, w, tgt))
+            eb.append(score(mb, crop, pca, alb, w, tgt))
 
     ea, eb = np.concatenate(ea), np.concatenate(eb)
     order = np.sort(np.concatenate([np.sort(val[lo:lo + 16])
