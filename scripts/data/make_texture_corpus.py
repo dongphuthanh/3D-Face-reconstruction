@@ -56,7 +56,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--images", default=str(ROOT / "data" / "ffhq" / "crops"))
     ap.add_argument("--out", default=str(ROOT / "data" / "texgen"))
-    ap.add_argument("--limit", type=int, default=6000)
+    ap.add_argument("--limit", type=int, default=6000, help="0 = every crop")
+    ap.add_argument("--offset", type=int, default=0,
+                    help="skip the first N crops. Lets a second pass EXTEND an "
+                         "existing corpus instead of rebuilding it: the first "
+                         "build took sorted(glob)[:6000], so --offset 6000 "
+                         "covers the rest with no overlap.")
+    ap.add_argument("--worker", type=int, default=0)
+    ap.add_argument("--of", type=int, default=1,
+                    help="split across N processes. The projection pipeline is "
+                         "CPU-bound at ~2 img/s, so this is near-linear.")
     ap.add_argument("--shard", type=int, default=500)
     a = ap.parse_args()
 
@@ -66,8 +75,19 @@ def main():
     out_dir = pathlib.Path(a.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    paths = sorted(pathlib.Path(a.images).glob("*.jpg"))[:a.limit]
-    print(f"{len(paths)} candidates from {a.images}", flush=True)
+    paths = sorted(pathlib.Path(a.images).glob("*.jpg"))
+    paths = paths[a.offset:]
+    if a.limit:
+        paths = paths[:a.limit]
+    tag = ""
+    if a.of > 1:
+        paths = paths[a.worker::a.of]
+        # Distinct prefix per worker so shards never collide; the trainer globs
+        # shard_*.npz and rebuilds its memmap when the shard COUNT changes.
+        tag = f"w{a.worker}_"
+    print(f"{len(paths)} candidates from {a.images}"
+          + (f" (worker {a.worker}/{a.of}, offset {a.offset})" if a.of > 1 else ""),
+          flush=True)
 
     face_area = float((rec.face_mask > 0.5).sum())
     buf, shard, kept, skipped = [], 0, 0, 0
@@ -140,7 +160,7 @@ def main():
             continue
 
         if len(buf) >= a.shard:
-            write(out_dir, shard, buf)
+            write(out_dir, shard, buf, tag)
             shard += 1
             buf = []
             rate = (i + 1) / max(time.time() - t0, 1e-6)
@@ -149,13 +169,13 @@ def main():
                   f"{rate:.1f} img/s  eta {eta:.0f} min", flush=True)
 
     if buf:
-        write(out_dir, shard, buf)
+        write(out_dir, shard, buf, tag)
     print(f"done: {kept} kept, {skipped} skipped, {shard + bool(buf)} shards "
           f"in {(time.time() - t0) / 60:.1f} min", flush=True)
 
 
-def write(out_dir, idx, buf):
-    path = out_dir / f"shard_{idx:03d}.npz"
+def write(out_dir, idx, buf, tag=""):
+    path = out_dir / f"shard_{tag}{idx:03d}.npz"
     np.savez(path,
              crop=np.stack([b["crop"] for b in buf]),
              albedo=np.stack([b["albedo"] for b in buf]),

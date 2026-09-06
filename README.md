@@ -60,11 +60,12 @@ the face region:
 
 | | |
 |---|---|
-| the FLAME albedo basis alone | 0.1497 |
-| **this project** | **0.0594** — 60% closer |
+| the FLAME albedo basis alone | 0.1508 |
+| **this project** | **0.0564** — 63% closer |
 
-For scale, an autoencoder allowed to *see* the target reaches 0.0403, so this
-covers about four fifths of what is achievable with this representation.
+Measured on 904 held-out faces. For scale, an autoencoder allowed to *see* the
+target reaches 0.0383, so this covers about **84%** of what is achievable with
+this representation.
 
 One number is load-bearing enough to name: `SHAPE_CALIBRATION = 0.40`. The raw
 prediction scores **worse than a constant mesh**; keeping only 40% of the

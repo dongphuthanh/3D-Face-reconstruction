@@ -205,10 +205,10 @@ then a photograph-to-latent head warm-started from its decoder.
 
 | masked L1 vs the photograph, 286 held out | |
 |---|---|
-| PCA basis | 0.1497 |
-| generator + procedural layer (ships) | **0.0594** — 60.3% closer |
+| PCA basis | 0.1508 |
+| generator + procedural layer (ships) | **0.0564** — 62.6% closer |
 | generator alone, no named parameters | 0.0488 — 67.4% closer |
-| autoencoder (upper bound, sees the target) | 0.0403 — 73.1% closer |
+| autoencoder (upper bound, sees the target) | 0.0383 — 74.6% closer |
 
 The procedural layer costs ~7 points of pixel fidelity and buys editability —
 see below. Judge it on renders: this metric rewards matching pixels and cannot

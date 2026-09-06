@@ -112,7 +112,7 @@ class Reconstructor:
     # Matched pair. Change both or neither.
     CHECKPOINT = ROOT / "runs" / "deca_open" / "encoder.pt"
     FLAME_MODEL = "FLAME2023Open/flame2023_Open.pkl"
-    TEXGEN = ROOT / "runs" / "texgen_gen6" / "model.pt"
+    TEXGEN = ROOT / "runs" / "texgen_gen7" / "model.pt"
 
     def __init__(self, checkpoint=None, device="cpu", flame_model=None,
                  project=True, texgen=True):

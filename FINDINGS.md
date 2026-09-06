@@ -62,6 +62,48 @@ available to explain them. The segmenter that would fix it already exists
 (`face3d/texture/segment.py`) and is used only for the inference-time texture
 projection.
 
+**Tripling the texture corpus is the one change that did work.** The generator
+was data-limited and said so: train sat 32% below val, and val bottomed around
+epoch 33 then turned up. The corpus was 5,738 targets because
+`make_texture_corpus.py` defaults to `--limit 6000`, while FFHQ has 19,978
+crops -- so 3x more data was available for the cost of compute alone.
+
+Extended to 18,082 targets (`--offset 6000`, so the existing 2.3 GB is reused
+rather than rebuilt) and retrained with everything else identical: 45 epochs,
+same warm start from `texgen_ae2`.
+
+| | best val | masked L1, 904 held out |
+|---|---|---|
+| gen6, 5,738 targets | 0.03415 | 0.05899 |
+| **gen7, 18,082 targets** | **0.02945** | **0.05644** |
+
+Paired per-face, which is the test that matters -- an aggregate mean can move
+because a handful of faces changed a lot:
+
+```
+904 faces   B better on 747 (82.6%)   sign-test z = 19.6
+            worse by >10% on 5 faces, better by >10% on 102
+```
+
+And with the confound removed. The new corpus CONTAINS the old one, so ~30% of
+the held-out split is gen6's own training data, which flatters gen6. Shards
+sort old-first, so those faces separate cleanly:
+
+```
+609 faces neither model trained on:  +4.52%,  B better on 81.9%,  z = 15.8
+```
+
+The advantage is slightly LARGER once gen6 stops being scored on its own
+training data, which is the direction a real effect should move.
+
+Val also stopped turning up -- gen7 ends flat at 0.02945/0.02947 rather than
+bottoming and rising -- so the overfitting the corpus size was causing is gone.
+Against a re-measured ceiling (the autoencoder, which sees the target, scores
+0.0383 on this split) the generator now covers 84% of what this representation
+can do, up from 82%. That ceiling is itself understated: `texgen_ae2` was
+trained on the old corpus, so retraining it on 18,082 would likely lower it and
+reopen some headroom.
+
 **Gating the photometric loss on segmented skin changed nothing measurable.**
 The photometric mask is the rendered mesh silhouette restricted to face-skin
 triangles, which is mesh-side: it selects which triangles to compare, not which
